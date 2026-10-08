@@ -121,12 +121,7 @@ function zip_read_entry(data, n: int, name: string, method: int, crc: int, comp_
     if data_off + comp_len > n
         throw "archive: truncated zip payload for entry: " + name
     end
-    let content = bytes_slice(data, data_off, comp_len)
-    if method == 8
-        content = inflate_exact(content, uncomp_len)
-    elif method != 0
-        throw "archive: unsupported zip method: " + str(method)
-    end
+    let content = zip_decompress_payload(bytes_slice(data, data_off, comp_len), method, uncomp_len)
     if len(content) != uncomp_len
         throw "archive: zip size mismatch for entry: " + name
     end
@@ -166,15 +161,7 @@ function zip_append_entry(out, central, e: ArchiveEntry, method: int)
     if method == 8 and e.is_dir == 0 and len(e.data) > 0
         use_deflate = 1
     end
-    # NOTE: the payload is selected inline, never returned through a
-    # helper call. Returning a borrowed array across a call boundary
-    # corrupts the heap on repeated builds (upstream Alya runtime/GC
-    # issue alya-lang/alya#125: the returned alias loses its GC root
-    # and is reclaimed while still referenced).
-    let payload = e.data
-    if use_deflate == 1
-        payload = compress_pkg::deflate(e.data)
-    end
+    let payload = zip_compress_payload(e.data, use_deflate)
     let m = 0
     if use_deflate == 1
         m = 8
@@ -243,4 +230,26 @@ function zip_find_eocd(data) -> int
         i -= 1
     end
     return -1
+end
+
+# Selects the stored payload or its deflated form. On the stored path
+# this returns its borrowed argument; that shape once corrupted the heap
+# on rebuild loops (alya-lang/alya#125, fixed) and stays guarded by the
+# repeated-build regression tests in tests/test_basic.alya.
+function zip_compress_payload(data, use_deflate: int) -> array
+    if use_deflate == 1
+        return compress_pkg::deflate(data)
+    end
+    return data
+end
+
+# Inflates a deflated payload into its central-directory exact size.
+function zip_decompress_payload(data, method: int, uncomp_len: int) -> array
+    if method == 8
+        return inflate_exact(data, uncomp_len)
+    end
+    if method != 0
+        throw "archive: unsupported zip method: " + str(method)
+    end
+    return data
 end

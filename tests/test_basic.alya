@@ -197,6 +197,52 @@ function main()
     runner_assert_eq(r, len(tgz_file_back), 4, "tarball pack_file/unpack_file round-trips")
     remove_file(tgz_path)
 
+    # ═══════════════════════════════════════════════════════════
+    # 10. Repeated Builds Over Shared Entries (alya#125 regression)
+    # ═══════════════════════════════════════════════════════════
+    # Borrowed payload arrays once lost their GC root when returned
+    # through a helper call, corrupting rebuild loops. Hammer the same
+    # shared entries: every image must stay byte-identical.
+    let shared_entries = [
+        pkg::make_text_entry("hello.txt", "Hello, Alya!"),
+        pkg::make_entry("data/blob.bin", zip_bin)
+    ]
+    let first_zip = pkg::zip_build(shared_entries, 0)
+    let zip_stable = true
+    let rz = 0
+    while rz < 100
+        if len(pkg::zip_build(shared_entries, 0)) != len(first_zip)
+            zip_stable = false
+        end
+        rz += 1
+    end
+    runner_assert_eq(r, zip_stable, true, "100 repeated stored zip_builds stay identical")
+
+    let first_def = pkg::zip_build(shared_entries, 8)
+    let def_stable = true
+    let rd = 0
+    while rd < 50
+        if len(pkg::zip_build(shared_entries, 8)) != len(first_def)
+            def_stable = false
+        end
+        rd += 1
+    end
+    runner_assert_eq(r, def_stable, true, "50 repeated deflated zip_builds stay identical")
+
+    let loop_parsed = pkg::zip_parse(pkg::zip_build(shared_entries, 0))
+    runner_assert_eq(r, bytes_equal(loop_parsed[1].data, zip_bin), true, "looped rebuild preserves binary payload")
+
+    let first_tar = pkg::tar_build(tar_entries)
+    let tar_stable = true
+    let rt = 0
+    while rt < 50
+        if len(pkg::tar_build(tar_entries)) != len(first_tar)
+            tar_stable = false
+        end
+        rt += 1
+    end
+    runner_assert_eq(r, tar_stable, true, "50 repeated tar_builds stay identical")
+
     let failed = runner_summary(r)
     if failed > 0
         exit(1)
