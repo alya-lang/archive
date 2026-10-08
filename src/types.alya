@@ -1,434 +1,155 @@
-## archive Types & Data Structures
+## Archive Types & Data Structures
 ##
 ## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
-## Defines configuration models, enumerations, structural interfaces, and associated methods
-## showcasing the full range of modern Alya type system capabilities.
+## Container format identifiers, ZIP method codes, and the shared entry
+## model used by the TAR, ZIP, and TAR.GZ engines.
 
-# ───────────────────────────────────────────────────────────────
-# Structural Interfaces (Duck Typing)
-# ───────────────────────────────────────────────────────────────
-
-## Public interface for objects capable of producing a formatted string summary.
-##
-## Any struct implementing a `summary(self) -> string` method implicitly
-## satisfies this interface via Alya's structural duck-typing runtime.
-pub interface Summarizable
-    function summary(self) -> string
-end
-
-## Public interface for objects that provide detailed status descriptions and validation.
-##
-## Structs implementing `describe(self) -> string` and `is_valid(self) -> int`
-## satisfy this contract without explicit inheritance declarations.
-pub interface Describable
-    function describe(self) -> string
-    function is_valid(self) -> int
-end
+import "std/str"
 
 # ───────────────────────────────────────────────────────────────
 # Enumerations
 # ───────────────────────────────────────────────────────────────
 
-## Public enumeration of entity lifecycle status states.
+## Public enumeration of supported (and explicitly detected but
+## unsupported) archive container formats.
 ##
-## Defines sequential status codes from pending to completed or error states.
-pub enum ArchiveStatus
-    Pending = 0,
-    Active = 1,
-    Archived = 2,
-    Error = 3
+## - `Unknown`: Unrecognized byte stream, no known magic signature.
+## - `Tar`: POSIX ustar (`tar`) archive.
+## - `Zip`: ZIP container (stored and deflated entries).
+## - `TarGz`: Gzip-compressed tarball (`.tar.gz` / `.tgz`).
+## - `SevenZ`: Detected 7z signature (read/write unsupported in v0.1.0).
+## - `Rar`: Detected RAR signature (unsupported, proprietary format).
+pub enum ArchiveFormat
+    Unknown = 0,
+    Tar = 1,
+    Zip = 2,
+    TarGz = 3,
+    SevenZ = 4,
+    Rar = 5
 end
 
-## Public enumeration of operational priority levels.
+## Public enumeration of ZIP compression methods (subset).
 ##
-## Used to determine dispatch scheduling, queue ordering, and urgency tiers.
-pub enum ArchivePriority
-    Low = 0,
-    Normal = 1,
-    High = 2,
-    Critical = 3
-end
-
-## Public enumeration of greeting and presentation styles.
-##
-## Governs formatting salutations, prefixes, and stylistic tone.
-pub enum ArchiveStyle
-    Standard = 0,
-    Formal = 1,
-    Casual = 2
+## - `Stored`: No compression, raw payload bytes (`0`).
+## - `Deflated`: Raw DEFLATE stream via `compress` codecs (`8`).
+pub enum ZipMethod
+    Stored = 0,
+    Deflated = 8
 end
 
 # ───────────────────────────────────────────────────────────────
 # Data Models (Structs)
 # ───────────────────────────────────────────────────────────────
 
-## Configuration data model holding execution parameters and metadata.
+## Archive entry model: a single named file or directory payload.
 ##
-## Encapsulates target identity, counter thresholds, priority tier, stylistic
-## mode, active status flag, and associated classification tags.
+## Payloads are plain byte arrays (`array` of `0..255` ints), never
+## strings, so embedded NUL bytes round-trip safely through every engine.
 ##
 ## ### Fields
-## - `name`: Validated entity identifier string.
-## - `count`: Repetition limit or processing counter.
-## - `priority`: Operational priority level (`ArchivePriority` enum value).
-## - `style`: Presentation style variant (`ArchiveStyle` enum value).
-## - `enabled`: Activation flag (1 for active, 0 for inactive).
-## - `tags`: Categorical metadata tags array.
-pub struct ArchiveConfig
+## - `name`: Entry path inside the archive (POSIX separators).
+## - `data`: Raw payload bytes (empty for directories).
+## - `mode`: POSIX permission bits (e.g. `420` for `0644`).
+## - `mtime`: Modification time as Unix epoch seconds (`0` when unknown).
+## - `is_dir`: Directory flag (`1` for directories, `0` for files).
+pub struct ArchiveEntry
     name: string,
-    count: int,
-    priority: int,
-    style: int,
-    enabled: int,
-    tags: array
-end
-
-## Container representing the outcome of an operation.
-##
-## Holds an optional payload value, numeric status code, informational message,
-## and accumulated error diagnostic messages.
-##
-## ### Fields
-## - `value`: Result payload (any type, or null on failure).
-## - `status`: Outcome code (0 for success, non-zero for errors).
-## - `message`: Human-readable summary or error explanation.
-## - `errors`: Diagnostic error messages array.
-pub struct ArchiveResult
-    value,
-    status: int,
-    message: string,
-    errors: array
-end
-
-## Aggregated run statistics tracking test, processing, or batch metrics.
-##
-## Records total observed items, successes, failures, and skipped items.
-##
-## ### Fields
-## - `total`: Total processed items count.
-## - `passed`: Succeeded items count.
-## - `failed`: Failed items count.
-## - `skipped`: Skipped items count.
-pub struct ArchiveStats
-    total: int,
-    passed: int,
-    failed: int,
-    skipped: int
+    data: array,
+    mode: int,
+    mtime: int,
+    is_dir: int
 end
 
 # ───────────────────────────────────────────────────────────────
-# Private Helper Functions
+# Public Factory Constructors
 # ───────────────────────────────────────────────────────────────
 
-# Internal sanitizer ensuring a non-empty, non-null string fallback.
-function sanitize_text_internal(text, fallback: string) -> string
-    return when
-        text is null => fallback
-        text == ""   => fallback
-        else         => text
-    end
-end
-
-# Formats integer division as a percentage string, clamping denominator zero.
-function format_percent_internal(passed: int, total: int) -> string
-    if total <= 0
-        return "0%"
-    end
-    let pct = (passed * 100) / total
-    return "{pct}%"
-end
-
-# ───────────────────────────────────────────────────────────────
-# Public Sanitization and Factory Constructors
-# ───────────────────────────────────────────────────────────────
-
-## Validates and sanitizes a candidate name string.
-##
-## Replaces null or empty strings with the default `"World"` fallback.
+## Factory constructor creating a file `ArchiveEntry` from raw bytes.
 ##
 ## ### Parameters
-## - `name`: The candidate name value to sanitize.
+## - `name`: Entry path inside the archive.
+## - `data`: Raw payload byte array. Defaults to `[]`.
+## - `mode`: POSIX permission bits. Defaults to `420` (`0644`).
+## - `mtime`: Modification epoch seconds. Defaults to `0`.
 ##
 ## ### Returns
-## The validated string value, or `"World"` if empty or null.
+## A fully initialized file `ArchiveEntry`.
 ##
 ## ### Examples
 ## ```alya
-## let clean = sanitize_name(null) # "World"
-## let user = sanitize_name("Alice") # "Alice"
+## let e = make_entry("hello.txt", [72, 105])
 ## ```
-pub function sanitize_name(name) -> string
-    return sanitize_text_internal(name, "World")
-end
-
-## Factory constructor creating a validated `ArchiveConfig` instance.
-##
-## Sanitizes the input name and sets sensible defaults for optional fields.
-##
-## ### Parameters
-## - `name`: Entity identifier name. Defaults to `"World"`.
-## - `count`: Counter or repetition limit. Defaults to `1`.
-## - `priority`: Priority tier. Defaults to `ArchivePriority.Normal`.
-## - `style`: Presentation style variant. Defaults to `ArchiveStyle.Standard`.
-## - `enabled`: Active flag. Defaults to `1`.
-## - `tags`: Categorization tags array. Defaults to `[]`.
-##
-## ### Returns
-## A fully initialized `ArchiveConfig` instance.
-##
-## ### Examples
-## ```alya
-## let cfg = make_config("Alice", 3, ArchivePriority.High)
-## ```
-pub function make_config(name = "World", count: int = 1, priority: int = ArchivePriority.Normal, style: int = ArchiveStyle.Standard, enabled: int = 1, tags: array = []) -> ArchiveConfig
-    let valid_name = sanitize_name(name)
-    return ArchiveConfig {
-        name: valid_name,
-        count: count,
-        priority: priority,
-        style: style,
-        enabled: enabled,
-        tags: tags
+pub function make_entry(name: string, data: array = [], mode: int = 420, mtime: int = 0) -> ArchiveEntry
+    return ArchiveEntry {
+        name: name,
+        data: data,
+        mode: mode,
+        mtime: mtime,
+        is_dir: 0
     }
 end
 
-## Factory constructor creating a successful `ArchiveResult`.
+## Factory constructor creating a directory `ArchiveEntry`.
+##
+## A trailing slash is appended when missing, following tar/zip convention.
 ##
 ## ### Parameters
-## - `value`: The success payload to encapsulate.
-## - `message`: Descriptive success message string. Defaults to `"OK"`.
+## - `name`: Directory path inside the archive.
+## - `mode`: POSIX permission bits. Defaults to `493` (`0755`).
+## - `mtime`: Modification epoch seconds. Defaults to `0`.
 ##
 ## ### Returns
-## A `ArchiveResult` with status `0` and empty errors array.
-##
-## ### Examples
-## ```alya
-## let res = ok_result("Processed data", "Success")
-## ```
-pub function ok_result(value, message: string = "OK") -> ArchiveResult
-    return ArchiveResult {
-        value: value,
-        status: 0,
-        message: message,
-        errors: []
-    }
-end
-
-## Factory constructor creating a failed `ArchiveResult`.
-##
-## ### Parameters
-## - `message`: Descriptive error message string.
-## - `errors`: Diagnostic error details array. Defaults to `[]`.
-##
-## ### Returns
-## A `ArchiveResult` with status `1` and null value payload.
-##
-## ### Examples
-## ```alya
-## let err = error_result("Validation failed", ["Name is missing"])
-## ```
-pub function error_result(message: string, errors: array = []) -> ArchiveResult
-    return ArchiveResult {
-        value: null,
-        status: 1,
-        message: message,
-        errors: errors
-    }
-end
-
-## Factory constructor creating a `ArchiveStats` metric record.
-##
-## ### Parameters
-## - `total`: Total observed items count.
-## - `passed`: Succeeded items count.
-## - `failed`: Failed items count.
-## - `skipped`: Skipped items count. Defaults to `0`.
-##
-## ### Returns
-## A populated `ArchiveStats` record.
-##
-## ### Examples
-## ```alya
-## let stats = make_stats(100, 95, 5, 0)
-## ```
-pub function make_stats(total: int, passed: int, failed: int, skipped: int = 0) -> ArchiveStats
-    return ArchiveStats {
-        total: total,
-        passed: passed,
-        failed: failed,
-        skipped: skipped
-    }
-end
-
-# ───────────────────────────────────────────────────────────────
-# Struct Methods: ArchiveConfig
-# ───────────────────────────────────────────────────────────────
-
-## Returns a formatted single-line string summary of this configuration.
-##
-## Implicitly satisfies the `Summarizable` interface.
-##
-## ### Parameters
-## - `self`: The target `ArchiveConfig` instance.
-##
-## ### Returns
-## Formatted summary string in the form `"{name} (count: {count}, enabled: {enabled})"`.
-pub function ArchiveConfig.summary(self: ArchiveConfig) -> string
-    let active_str = when self.enabled
-        is true => "active"
-        else => "disabled"
+## A directory `ArchiveEntry` with an empty payload.
+pub function make_dir_entry(name: string, mode: int = 493, mtime: int = 0) -> ArchiveEntry
+    let dir_name = name
+    if ends_with(dir_name, "/") == 0
+        dir_name += "/"
     end
-    return "{self.name} (count: {self.count}, {active_str})"
-end
-
-## Returns a detailed multi-attribute description of this configuration.
-##
-## Implicitly satisfies the `Describable` interface.
-##
-## ### Parameters
-## - `self`: The target `ArchiveConfig` instance.
-##
-## ### Returns
-## Detailed descriptive string including priority and style codes.
-pub function ArchiveConfig.describe(self: ArchiveConfig) -> string
-    return "[Config] name={self.name}, count={self.count}, priority={self.priority}, style={self.style}"
-end
-
-## Validates whether this configuration conforms to essential operational constraints.
-##
-## Implicitly satisfies the `Describable` interface.
-##
-## ### Parameters
-## - `self`: The target `ArchiveConfig` instance.
-##
-## ### Returns
-## `1` if valid (non-empty name and count >= 0), `0` otherwise.
-pub function ArchiveConfig.is_valid(self: ArchiveConfig) -> int
-    if self.name == "" or self.count < 0
-        return false
-    end
-    return true
-end
-
-## Returns 1 if this configuration is enabled, 0 otherwise.
-##
-## ### Parameters
-## - `self`: The target `ArchiveConfig` instance.
-##
-## ### Returns
-## `1` when enabled, `0` when disabled.
-pub function ArchiveConfig.is_enabled(self: ArchiveConfig) -> int
-    return self.enabled
-end
-
-## Returns a new configuration copy with an updated name.
-##
-## ### Parameters
-## - `self`: The current `ArchiveConfig` instance.
-## - `new_name`: The replacement name string.
-##
-## ### Returns
-## A new `ArchiveConfig` instance with updated name.
-pub function ArchiveConfig.with_name(self: ArchiveConfig, new_name) -> ArchiveConfig
-    return ArchiveConfig {
-        name: sanitize_name(new_name),
-        count: self.count,
-        priority: self.priority,
-        style: self.style,
-        enabled: self.enabled,
-        tags: self.tags
+    return ArchiveEntry {
+        name: dir_name,
+        data: [],
+        mode: mode,
+        mtime: mtime,
+        is_dir: 1
     }
 end
 
-## Returns a new configuration copy with an updated priority level.
+## Returns the payload size of an entry in bytes.
 ##
 ## ### Parameters
-## - `self`: The current `ArchiveConfig` instance.
-## - `new_priority`: New priority level from `ArchivePriority`.
+## - `entry`: The target `ArchiveEntry` instance.
 ##
 ## ### Returns
-## A new `ArchiveConfig` instance with updated priority.
-pub function ArchiveConfig.with_priority(self: ArchiveConfig, new_priority: int) -> ArchiveConfig
-    return ArchiveConfig {
-        name: self.name,
-        count: self.count,
-        priority: new_priority,
-        style: self.style,
-        enabled: self.enabled,
-        tags: self.tags
-    }
+## Payload byte count (`0` for directories).
+pub function entry_size(entry: ArchiveEntry) -> int
+    return len(entry.data)
 end
 
-# ───────────────────────────────────────────────────────────────
-# Struct Methods: ArchiveResult
-# ───────────────────────────────────────────────────────────────
-
-## Returns 1 if this result represents a successful operation.
+## Returns 1 when the entry is a directory, 0 otherwise.
 ##
 ## ### Parameters
-## - `self`: The target `ArchiveResult` instance.
+## - `entry`: The target `ArchiveEntry` instance.
 ##
 ## ### Returns
-## `1` when status is `0`, `0` otherwise.
-pub function ArchiveResult.is_ok(self: ArchiveResult) -> int
-    if self.status == 0
-        return true
+## The entry `is_dir` flag.
+pub function entry_is_dir(entry: ArchiveEntry) -> int
+    return entry.is_dir
+end
+
+## Returns the canonical lowercase name of an archive format.
+##
+## ### Parameters
+## - `format`: An `ArchiveFormat` value.
+##
+## ### Returns
+## `"tar"`, `"zip"`, `"tar.gz"`, `"7z"`, `"rar"`, or `"unknown"`.
+pub function format_name(format: int) -> string
+    return when format
+        is ArchiveFormat.Tar => "tar"
+        is ArchiveFormat.Zip => "zip"
+        is ArchiveFormat.TarGz => "tar.gz"
+        is ArchiveFormat.SevenZ => "7z"
+        is ArchiveFormat.Rar => "rar"
+        else => "unknown"
     end
-    return false
-end
-
-## Returns 1 if this result represents an error condition.
-##
-## ### Parameters
-## - `self`: The target `ArchiveResult` instance.
-##
-## ### Returns
-## `1` when status is non-zero, `0` when status is `0`.
-pub function ArchiveResult.is_error(self: ArchiveResult) -> int
-    if self.status != 0
-        return true
-    end
-    return false
-end
-
-## Unwraps the result's message string, or returns a fallback string on error.
-##
-## ### Parameters
-## - `self`: The target `ArchiveResult` instance.
-## - `fallback`: Alternative string returned if this result represents an error.
-##
-## ### Returns
-## `message` on success, or `fallback` on error.
-pub function ArchiveResult.unwrap_or(self: ArchiveResult, fallback: string) -> string
-    if self.status == 0
-        return self.message
-    end
-    return fallback
-end
-
-# ───────────────────────────────────────────────────────────────
-# Struct Methods: ArchiveStats
-# ───────────────────────────────────────────────────────────────
-
-## Returns the total number of checked items (passed + failed).
-##
-## ### Parameters
-## - `self`: The target `ArchiveStats` instance.
-##
-## ### Returns
-## Integer sum of passed and failed items.
-pub function ArchiveStats.total_checked(self: ArchiveStats) -> int
-    return self.passed + self.failed
-end
-
-## Computes and returns the success rate percentage as a formatted string.
-##
-## ### Parameters
-## - `self`: The target `ArchiveStats` instance.
-##
-## ### Returns
-## Formatted percentage string (e.g. `"90%"`).
-pub function ArchiveStats.success_rate(self: ArchiveStats) -> string
-    let checked = self.passed + self.failed
-    return format_percent_internal(self.passed, checked)
 end

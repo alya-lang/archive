@@ -1,0 +1,170 @@
+## Archive TAR (USTAR) Engine
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Pure-Alya POSIX ustar builder and parser operating on byte arrays.
+## Limits (v0.1.0): ASCII entry names of 1..100 bytes, regular files plus
+## directory markers, no GNU long-name (`L`) or sparse (`S`) extensions.
+
+import "../types.alya"
+import "./bytes.alya"
+
+## Builds a ustar archive image from an array of `ArchiveEntry` records.
+##
+## ### Parameters
+## - `entries`: Array of `ArchiveEntry` structs to store.
+##
+## ### Returns
+## Archive image as a byte array, terminated by two zero blocks.
+pub function tar_build(entries) -> array
+    let out = []
+    for e in entries
+        tar_append_entry(out, e)
+    end
+    let z = 0
+    while z < 1024
+        out.push(0)
+        z += 1
+    end
+    return out
+end
+
+## Parses a ustar archive image back into entry records.
+##
+## Parsing stops at the first zero block, per POSIX convention.
+##
+## ### Parameters
+## - `data`: Archive image byte array.
+##
+## ### Returns
+## Array of `ArchiveEntry` structs, or throws on corrupt input.
+pub function tar_parse(data) -> array
+    let entries = []
+    let pos = 0
+    let n = len(data)
+    while pos + 512 <= n
+        let block = bytes_slice(data, pos, 512)
+        if is_zero_block(block, 0, 512) == true
+            return entries
+        end
+        let entry = tar_parse_header(block)
+        pos += 512
+        let size = octal_to_int(bytes_slice(block, 124, 12))
+        if entry.is_dir == 1
+            size = 0
+        end
+        if pos + size > n
+            throw "archive: truncated tar payload for entry: " + entry.name
+        end
+        entry.data = bytes_slice(data, pos, size)
+        entries.push(entry)
+        pos += ((size + 511) / 512) * 512
+    end
+    return entries
+end
+
+## Lists entry names of a ustar archive image without copying payloads.
+##
+## ### Parameters
+## - `data`: Archive image byte array.
+##
+## ### Returns
+## Array of entry name strings in archive order.
+pub function tar_names(data) -> array
+    let parsed = tar_parse(data)
+    let names = []
+    for e in parsed
+        names.push(e.name)
+    end
+    return names
+end
+
+# Appends one 512-byte header plus padded payload to the image buffer.
+function tar_append_entry(out, e: ArchiveEntry)
+    let name_bytes = bytes_from_string(e.name)
+    if len(name_bytes) == 0 or len(name_bytes) > 100
+        throw "archive: tar entry name must be 1..100 bytes (ustar limit)"
+    end
+    let header = bytes_zero(512)
+    poke_bytes(header, 0, name_bytes)
+    poke_bytes(header, 100, int_to_octal(e.mode, 7))
+    header[107] = 32
+    poke_bytes(header, 108, int_to_octal(0, 7))
+    header[115] = 32
+    poke_bytes(header, 116, int_to_octal(0, 7))
+    header[123] = 32
+    let payload_len = 0
+    if e.is_dir == 0
+        payload_len = len(e.data)
+    end
+    poke_bytes(header, 124, int_to_octal(payload_len, 11))
+    header[135] = 32
+    poke_bytes(header, 136, int_to_octal(e.mtime, 11))
+    header[147] = 32
+    poke_bytes(header, 148, [32, 32, 32, 32, 32, 32, 32, 32])
+    if e.is_dir == 1
+        header[156] = 53
+    else
+        header[156] = 48
+    end
+    poke_bytes(header, 257, [117, 115, 116, 97, 114, 0])
+    poke_bytes(header, 263, [48, 48])
+    let checksum = tar_checksum(header)
+    poke_bytes(header, 148, int_to_octal(checksum, 6))
+    header[154] = 0
+    header[155] = 32
+    bytes_append(out, header)
+    if e.is_dir == 0
+        bytes_append(out, e.data)
+        let pad = (512 - (payload_len % 512)) % 512
+        let i = 0
+        while i < pad
+            out.push(0)
+            i += 1
+        end
+    end
+end
+
+# Parses one 512-byte header block into an entry with an empty payload.
+function tar_parse_header(block) -> ArchiveEntry
+    if bytes_equal(bytes_slice(block, 257, 5), [117, 115, 116, 97, 114]) == false
+        throw "archive: invalid tar header (missing ustar magic)"
+    end
+    let stored = octal_to_int(bytes_slice(block, 148, 8))
+    if stored != tar_checksum(block)
+        throw "archive: tar header checksum mismatch"
+    end
+    let name = read_str_field(block, 0, 100)
+    let nb = bytes_from_string(name)
+    if len(nb) == 0
+        throw "archive: tar entry with empty name"
+    end
+    let is_dir = 0
+    if block[156] == 53
+        is_dir = 1
+    end
+    if nb[len(nb) - 1] == 47
+        is_dir = 1
+    end
+    return ArchiveEntry {
+        name: name,
+        data: [],
+        mode: octal_to_int(bytes_slice(block, 100, 8)),
+        mtime: octal_to_int(bytes_slice(block, 136, 12)),
+        is_dir: is_dir
+    }
+end
+
+# Computes the ustar header checksum (checksum field counted as spaces).
+function tar_checksum(header) -> int
+    let sum = 0
+    let i = 0
+    while i < 512
+        if i < 148 or i > 155
+            sum += header[i]
+        else
+            sum += 32
+        end
+        i += 1
+    end
+    return sum
+end

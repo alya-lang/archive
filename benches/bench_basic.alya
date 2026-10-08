@@ -7,71 +7,82 @@ import "../src/lib.alya" as pkg
 function main()
     let runner = bench_runner("archive Micro-Benchmarks")
 
-    # Bench 1: hello() facade function — 100k iterations
-    bench_start(runner, 100000)
+    let payload = []
     let i = 0
-    while i < 100000
-        pkg::hello("Alya")
+    while i < 2048
+        payload.push(i % 251)
         i += 1
     end
-    bench_stop(runner, "hello() 100k calls")
+    let entries = [
+        pkg::make_text_entry("hello.txt", "Hello, Alya! Benchmark payload."),
+        pkg::make_entry("data/blob.bin", payload),
+        pkg::make_dir_entry("assets")
+    ]
 
-    # Bench 2: process() default call — 100k iterations
-    bench_start(runner, 100000)
-    let j = 0
-    while j < 100000
-        pkg::process()
-        j += 1
+    # Bench 1: tar_build — 500 iterations
+    bench_start(runner, 500)
+    let a = 0
+    while a < 500
+        pkg::tar_build(entries)
+        a += 1
     end
-    bench_stop(runner, "process() default 100k calls")
+    bench_stop(runner, "tar_build 3 entries 500x")
 
-    # Bench 3: make_config + format_config — 50k iterations
-    bench_start(runner, 50000)
-    let k = 0
-    while k < 50000
-        let cfg = pkg::new_config("bench", 1, pkg::ArchivePriority.High, pkg::ArchiveStyle.Formal)
-        pkg::core_format_custom(cfg)
-        k += 1
+    # Bench 2: tar_parse — 500 iterations
+    let tar_img = pkg::tar_build(entries)
+    bench_start(runner, 500)
+    let b = 0
+    while b < 500
+        pkg::tar_parse(tar_img)
+        b += 1
     end
-    bench_stop(runner, "new_config + format_custom 50k calls")
+    bench_stop(runner, "tar_parse 3 entries 500x")
 
-    # Bench 4: process_batch with 10-element array — 10k iterations
-    let labels = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
-    bench_start(runner, 10000)
-    let m = 0
-    while m < 10000
-        pkg::process_batch(labels)
-        m += 1
-    end
-    bench_stop(runner, "process_batch 10-item list 10k calls")
-
-    # Bench 5: struct method cfg.summary() — 200k iterations
-    let summ_cfg = pkg::new_config("summary-bench", 5)
-    bench_start(runner, 200000)
-    let s = 0
-    while s < 200000
-        summ_cfg.summary()
-        s += 1
-    end
-    bench_stop(runner, "cfg.summary() 200k calls")
-
-    # Bench 6: clamp() utility — 500k iterations
-    bench_start(runner, 500000)
+    # Bench 3: zip_build stored — 500 iterations
+    bench_start(runner, 500)
     let c = 0
-    while c < 500000
-        pkg::clamp(c, 0, 100)
+    while c < 500
+        pkg::zip_build(entries, 0)
         c += 1
     end
-    bench_stop(runner, "clamp() utility 500k calls")
+    bench_stop(runner, "zip_build stored 500x")
 
-    # Bench 7: repeat_string() utility — 10k iterations
-    bench_start(runner, 10000)
-    let r = 0
-    while r < 10000
-        pkg::repeat_string("bench", 10)
-        r += 1
+    # Bench 4: zip_parse stored — 500 iterations
+    let zip_img = pkg::zip_build(entries, 0)
+    bench_start(runner, 500)
+    let d = 0
+    while d < 500
+        pkg::zip_parse(zip_img)
+        d += 1
     end
-    bench_stop(runner, "repeat_string() 10k calls")
+    bench_stop(runner, "zip_parse stored 500x")
+
+    # Bench 5: archive_crc32 over 2 KiB — 2000 iterations
+    bench_start(runner, 2000)
+    let e = 0
+    while e < 2000
+        pkg::archive_crc32(payload)
+        e += 1
+    end
+    bench_stop(runner, "archive_crc32 2KiB 2000x")
+
+    # Bench 6: detect_format — 20000 iterations
+    bench_start(runner, 20000)
+    let f = 0
+    while f < 20000
+        pkg::detect_format(zip_img)
+        f += 1
+    end
+    bench_stop(runner, "detect_format 20000x")
+
+    # Bench 7: zip_build deflated — 100 iterations
+    bench_start(runner, 100)
+    let g = 0
+    while g < 100
+        pkg::zip_build(entries, 8)
+        g += 1
+    end
+    bench_stop(runner, "zip_build deflated 100x")
 
     bench_summary(runner)
 end

@@ -1,0 +1,11 @@
+# Native C FFI declarations for archive
+# Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+extern "C" from "archive"
+    function alya_archive_write_bytes(path: str, data: ptr, len: i64) -> i32
+    function alya_archive_read_bytes(path: str, out_buf: ptr, out_len: ptr) -> i32
+    function alya_archive_free_buffer(p: ptr) -> i32
+    function alya_archive_crc32(crc_init: i64, buf: ptr, len: i64) -> i64
+    function alya_archive_inflate_exact(src: ptr, src_len: i64, dst: ptr, dst_cap: i64, out_actual: ptr) -> i32
+    function alya_archive_gunzip_exact(src: ptr, src_len: i64, dst: ptr, dst_cap: i64, out_actual: ptr) -> i32
+end

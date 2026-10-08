@@ -11,15 +11,13 @@ Multi-format archive toolkit for Alya: TAR/USTAR, ZIP stored/deflate and TAR.GZ 
 
 ## 🌟 Features
 
-- ⚡ **Lightweight & High Performance**: Minimal memory overhead, zero runtime bloat, and fast native execution
-- 🧩 **Modular Architecture**: Layered multi-module design featuring a clean public facade (`src/lib.alya`), rich data models (`src/types.alya`), and encapsulated core formatters (`src/core/formatter.alya`)
-- 🔒 **Public/Private Visibility (`pub`)**: Fine-grained export control with `pub` for public functions, structs, and enums, keeping internal helper functions private and encapsulated
-- 🎭 **Structural Duck Typing & Interfaces**: Dynamic interface dispatch (`Summarizable`, `Describable`) without brittle inheritance hierarchies
-- 📦 **Rich Domain Models & Enums**: Idiomatic `enum` types (`ArchiveStatus`, `ArchivePriority`, `ArchiveStyle`) and typed data containers (`ArchiveConfig`, `ArchiveResult`, `ArchiveStats`)
-- 🎯 **Advanced Pattern Matching**: Clean branching with `when` expressions, range matching, and condition guards
-- 🛡️ **Defensive Result Pattern**: Structured error handling and outcome encapsulation with `ok_result` and `error_result`
-- 🧪 **Enterprise Test & Benchmark Suite**: 100% test coverage with standard assertions (`std/test`) and micro-benchmarking (`std/test` bench runner)
-- 🚩 **Feature-Gated API Slices**: Optional capability slices via `[features]` in `alya.toml` (`default = ["extras"]`) and `@cfg(feature = "extras")` gating with a `@cfg(not(feature = "extras"))` fallback stub (see `src/core/extras.alya`)
+- 📦 **Three Container Formats**: POSIX ustar `tar`, ZIP with central directory plus EOCD, and gzip-compressed `tar.gz`/`tgz` tarballs through one unified facade
+- 🧱 **Pure-Alya Engines**: TAR and stored-ZIP builders/parsers written in zero-dependency Alya on top of shared little-endian and octal codecs
+- 🗜️ **Compress-Powered Codecs**: ZIP deflate plus tarball gzip reuse the battle-tested `compress` package (pinned dependency); decompression targets exact declared sizes (gzip ISIZE, ZIP central directory), so payloads of any size unpack without output-growth limits
+- 🛡️ **Binary-Safe By Design**: Payloads are byte arrays end to end; a tiny bundled C bridge (`c/archive.c`) persists images without NUL truncation, and every ZIP payload is CRC-32 verified on read
+- 🔍 **Magic-Based Detection**: `detect_format` recognizes ZIP, gzip, 7z, RAR, and ustar signatures, so `unpack` auto-dispatches with `-1`
+- 🚫 **Honest Limits**: 7z/RAR report descriptive unsupported-format errors instead of silent corruption; v0.1.0 limits (100-byte tar names, no ZIP64, no encryption) are documented, not hidden
+- 🧪 **Enterprise Test & Benchmark Suite**: Round-trip coverage for text plus NUL-bearing binary payloads, file persistence, and micro-benchmarks (`std/test`)
 
 ---
 
@@ -31,25 +29,30 @@ archive/
 ├── .editorconfig           # Uniform formatting rules across IDEs and editors
 ├── .gitignore              # Ecosystem standard ignore filters
 ├── .vscode/                # VS Code workspace settings, DAP launch configurations & tasks
-├── alya.toml               # Package manifest with dependencies, [features] and optional [build]
-├── c/                      # (Optional) Native C sources for zero-dependency FFI packages
+├── alya.toml               # Package manifest with dependencies, [features] and [build]
+├── c/                      # Bundled native engine: binary file bridge + CRC-32
+│   ├── archive.c           # fread/fwrite with explicit lengths, IEEE CRC-32
+│   └── archive.h           # Native function declarations
 ├── src/
-│   ├── lib.alya            # Public API facade (pub exports, re-exports & pipeline runners)
-│   ├── types.alya          # Data models, pub enums, pub structs, and struct methods
-│   ├── ffi.alya            # (Optional) Native extern "C" declarations
+│   ├── lib.alya            # Public API facade (detection, pack/unpack dispatch, file helpers)
+│   ├── types.alya          # ArchiveFormat/ZipMethod enums, ArchiveEntry model, constructors
+│   ├── ffi.alya            # Native extern "C" declarations
 │   └── core/               # Subdirectory module hierarchy
-│       ├── formatter.alya  # Domain formatting routines, salutation builders & pattern matchers
-│       └── extras.alya     # Feature-gated (`extras`) optional API slice with `@cfg` gating
+│       ├── bytes.alya      # LE codecs, octal fields, byte/string conversion, buffers
+│       ├── file.alya       # Binary-safe save/load bridge plus archive_crc32
+│       ├── tar.alya        # USTAR builder and parser
+│       ├── zip.alya        # ZIP builder and parser (stored always, deflate gated)
+│       └── codecs.alya     # TAR.GZ packing (gzip via compress, exact-size unpack)
 ├── examples/
-│   └── demo.alya           # Comprehensive runnable walkthrough of all package capabilities
+│   └── demo.alya           # Runnable walkthrough of all package capabilities
 ├── tests/
-│   └── test_basic.alya     # Automated test suite with 100% feature coverage
+│   └── test_basic.alya     # Automated test suite with round-trip coverage
 └── benches/
-    └── bench_basic.alya    # Micro-benchmarks measuring performance and throughput
+    └── bench_basic.alya    # Micro-benchmarks measuring pack/parse throughput
 ```
 
 > [!NOTE]
-> **Visibility & Modularity:** Symbols annotated with `pub` (`pub function`, `pub struct`, `pub enum`, `pub interface`) are exported to external consumers and re-exporting modules. Symbols without `pub` remain strictly internal to their declaring module, preventing symbol collisions and implementation leakage.
+> **Visibility & Modularity:** Symbols annotated with `pub` (`pub function`, `pub struct`, `pub enum`) are exported to external consumers and re-exporting modules. Symbols without `pub` remain strictly internal to their declaring module, preventing symbol collisions and implementation leakage.
 
 ---
 
@@ -69,26 +72,76 @@ alya add archive --git https://github.com/alya-lang/archive --branch main
 alya install
 ```
 
+### Dependencies
+
+`archive` builds on the [`compress`](https://github.com/alya-lang/compress) package (pinned `v0.1.0`) for DEFLATE/gzip codecs, plus a small bundled C engine (`c/archive.c`) for binary-safe file persistence, CRC-32, and exact-size decompression.
+
 ---
 
 ## 🚀 Quick Start
+
+### 1. TAR Round-Trip
 
 ```alya
 import "archive" as pkg
 
 function main()
-    # 1. Basic facade call with default parameter
-    let greeting = pkg::hello()
-    say f"Greeting:  {greeting}"
+    let entries = [
+        pkg::make_text_entry("hello.txt", "Hello, Alya!"),
+        pkg::make_dir_entry("assets")
+    ]
 
-    # 2. Struct configuration with priority, style, and methods
-    let cfg = pkg::new_config("Community", 5, pkg::ArchivePriority.High, pkg::ArchiveStyle.Formal)
-    say f"Summary:   {cfg.summary()}"
-    say f"Formatted: {pkg::core_format_custom(cfg)}"
+    let image = pkg::pack(entries, pkg::ArchiveFormat.Tar)
+    say "Detected: " + pkg::format_name(pkg::detect_format(image))
 
-    # 3. Processing pipeline returning Result model
-    let res = pkg::process("Analytics", 3, pkg::ArchivePriority.Critical)
-    say f"Outcome:   {res.message}"
+    let back = pkg::unpack(image)
+    for e in back
+        say "Entry: " + e.name + " (" + str(pkg::entry_size(e)) + " bytes)"
+    end
+end
+
+main()
+```
+
+### 2. ZIP With File Persistence
+
+```alya
+import "archive" as pkg
+
+function main()
+    let entries = [
+        pkg::make_text_entry("hello.txt", "Hello, Alya!"),
+        pkg::make_text_entry("config/app.json", "{\"status\": \"ok\"}")
+    ]
+
+    pkg::pack_file("./demo.zip", entries, pkg::ArchiveFormat.Zip)
+
+    let names = pkg::list_names(pkg::load_archive("./demo.zip"))
+    for n in names
+        say "Archived: " + n
+    end
+
+    let first = pkg::find_entry(pkg::unpack_file("./demo.zip"), "hello.txt")
+    say "Extracted: " + pkg::entry_text(first)
+    remove_file("./demo.zip")
+end
+
+main()
+```
+
+### 3. TAR.GZ Tarball
+
+```alya
+import "archive" as pkg
+
+function main()
+    let entries = [pkg::make_text_entry("hello.txt", "Hello, Alya!")]
+
+    let tgz = pkg::targz_pack(entries)
+    say "Detected: " + pkg::format_name(pkg::detect_format(tgz))
+
+    let back = pkg::targz_unpack(tgz)
+    say "Entries: " + str(len(back))
 end
 
 main()
@@ -98,47 +151,43 @@ main()
 
 ## 📖 API Reference
 
-| Symbol | Visibility | Description |
-|---|---|---|
-| `hello(name = "World")` | `pub function` | Returns a formatted greeting string. Defaults to `"World"` if null or empty. |
-| `new_config(name, count, priority, style)` | `pub function` | Factory constructing a `ArchiveConfig` with sensible defaults. |
-| `make_config(name, count, priority, style, enabled, tags)` | `pub function` | Full constructor for `ArchiveConfig`. |
-| `process(label, count, priority)` | `pub function` | Runs processing pipeline, returning an `ok_result` `ArchiveResult`. |
-| `process_batch(labels)` | `pub function` | Formats an array of labels in batch, returning an array of strings. |
-| `ok_result(value, message)` | `pub function` | Constructs a successful `ArchiveResult` container (`status = 0`). |
-| `error_result(message, errors)` | `pub function` | Constructs a failed `ArchiveResult` container (`status = 1`). |
-| `make_stats(total, passed, failed, skipped)` | `pub function` | Constructs a `ArchiveStats` metrics record. |
-| `format_summary(cfg)` | `pub function` | Formats summary of a config instance (satisfies `Summarizable`). |
-| `format_description(cfg)` | `pub function` | Formats description of a config instance (satisfies `Describable`). |
-| `format_config(config)` | `pub function` | Multi-field formatter producing descriptive overview of a `ArchiveConfig`. |
-| `format_result(result)` | `pub function` | Formats a `ArchiveResult` into `[OK]` or `[ERROR]` status line. |
-| `format_stats(stats)` | `pub function` | Formats total checked items and success rate percentage. |
-| `clamp(n, min_val, max_val)` | `pub function` | Clamps an integer value to the closed range `[min_val, max_val]`. |
-| `pluralize(n, singular, plural)` | `pub function` | Pattern-matches count to return singular or plural noun form. |
-| `repeat_string(label, count)` | `pub function` | Repeats a string into an array of `count` items. |
-| `extra_greeting(name = "World")` | `pub function` (`extras` feature, default-on) | Enthusiastic greeting slice gated by `@cfg(feature = "extras")`; stub throws a descriptive error when the feature is off. |
-| `Summarizable` | `pub interface` | Structural contract requiring `summary(self) -> string`. |
-| `Describable` | `pub interface` | Structural contract requiring `describe(self) -> string` and `is_valid(self) -> int`. |
-| `ArchiveStatus` | `pub enum` | Lifecycle status codes (`Pending = 0`, `Active = 1`, `Archived = 2`, `Error = 3`). |
-| `ArchivePriority` | `pub enum` | Priority tiers (`Low = 0`, `Normal = 1`, `High = 2`, `Critical = 3`). |
-| `ArchiveStyle` | `pub enum` | Presentation styles (`Standard = 0`, `Formal = 1`, `Casual = 2`). |
-| `ArchiveConfig` | `pub struct` | Primary configuration model (`name`, `count`, `priority`, `style`, `enabled`, `tags`). |
-| `ArchiveConfig.summary()` | `pub method` | Single-line formatted summary (satisfies `Summarizable`). |
-| `ArchiveConfig.describe()` | `pub method` | Detailed multi-field description (satisfies `Describable`). |
-| `ArchiveConfig.is_valid()` | `pub method` | Validation guard returning 1 if valid, 0 otherwise. |
-| `ArchiveConfig.is_enabled()` | `pub method` | Returns 1 if active, 0 if disabled. |
-| `ArchiveConfig.with_name(new_name)` | `pub method` | Immutable copy with updated name. |
-| `ArchiveConfig.with_priority(new_prio)` | `pub method` | Immutable copy with updated priority tier. |
-| `ArchiveResult` | `pub struct` | Operation outcome model (`value`, `status`, `message`, `errors`). |
-| `ArchiveResult.is_ok()` | `pub method` | Returns 1 if successful (`status == 0`), 0 otherwise. |
-| `ArchiveResult.is_error()` | `pub method` | Returns 1 if error (`status != 0`), 0 otherwise. |
-| `ArchiveResult.unwrap_or(fallback)` | `pub method` | Returns message on success, or fallback on error. |
-| `ArchiveStats` | `pub struct` | Run statistics model (`total`, `passed`, `failed`, `skipped`). |
-| `ArchiveStats.total_checked()` | `pub method` | Sum of passed and failed items count. |
-| `ArchiveStats.success_rate()` | `pub method` | Computed percentage string (e.g. `"95%"`). |
+### Facade (`archive`)
 
-> [!TIP]
-> **Internal Helpers & Documentation:** Public symbols are documented with `##` Markdown docstrings, enabling automatic API documentation generation via `alya doc`. Private functions such as `build_salutation` and `build_priority_label` in `src/core/formatter.alya` are not annotated with `pub` and remain encapsulated within their respective modules.
+| Function | Arguments | Returns | Description |
+|---|---|---|---|
+| `detect_format(data)` | `data: list<int>` | `int` | Detects the container format from magic bytes (`ArchiveFormat`). |
+| `pack(entries, format)` | `entries: list<ArchiveEntry>, format: int` | `list<int>` | Packs entries into the requested container (default `Zip`). |
+| `unpack(data, format)` | `data: list<int>, format: int = -1` | `list<ArchiveEntry>` | Unpacks an image, auto-detecting with `-1`. |
+| `list_names(data, format)` | `data: list<int>, format: int = -1` | `list<string>` | Lists entry names in archive order. |
+| `make_text_entry(name, text, mode, mtime)` | `name: string, text: string, mode: int, mtime: int` | `ArchiveEntry` | Builds a file entry from UTF-8 text. |
+| `entry_text(entry)` | `entry: ArchiveEntry` | `string` | Decodes a NUL-free payload back to text. |
+| `find_entry(entries, name)` | `entries: list<ArchiveEntry>, name: string` | `ArchiveEntry | null` | Finds the first entry with the given name. |
+| `save_archive(path, data)` | `path: string, data: list<int>` | `int` | Saves an image without text mangling. |
+| `load_archive(path)` | `path: string` | `list<int>` | Loads an image preserving every byte. |
+| `pack_file(path, entries, format)` | `path: string, entries, format: int` | `int` | Packs entries directly to disk. |
+| `unpack_file(path, format)` | `path: string, format: int = -1` | `list<ArchiveEntry>` | Loads and unpacks an archive file. |
+
+### Engines
+
+| Function | Arguments | Returns | Description |
+|---|---|---|---|
+| `tar_build(entries)` | `entries: list<ArchiveEntry>` | `list<int>` | Builds a ustar image with two-block trailer. |
+| `tar_parse(data)` | `data: list<int>` | `list<ArchiveEntry>` | Parses a ustar image with checksum verification. |
+| `tar_names(data)` | `data: list<int>` | `list<string>` | Lists ustar entry names. |
+| `zip_build(entries, method)` | `entries, method: int = 0` | `list<int>` | Builds a ZIP image (0 stored, 8 deflated). |
+| `zip_parse(data)` | `data: list<int>` | `list<ArchiveEntry>` | Parses a ZIP image with CRC-32 verification. |
+| `zip_names(data)` | `data: list<int>` | `list<string>` | Lists ZIP entry names via central directory. |
+| `targz_pack(entries)` | `entries: list<ArchiveEntry>` | `list<int>` | Packs a gzip tarball. |
+| `targz_unpack(data)` | `data: list<int>` | `list<ArchiveEntry>` | Unpacks a gzip tarball (exact-size, single-member). |
+| `archive_crc32(data)` | `data: list<int>` | `int` | IEEE CRC-32 checksum of a byte array. |
+| `inflate_exact(payload, expected_len)` | `payload: list<int>, expected_len: int` | `list<int>` | Inflates a raw DEFLATE payload into its exact size. |
+| `gunzip_exact(data)` | `data: list<int>` | `list<int>` | Decompresses single-member gzip into its ISIZE size. |
+
+### Models
+
+- **`ArchiveFormat`**: `Unknown (0)`, `Tar (1)`, `Zip (2)`, `TarGz (3)`, `SevenZ (4)`, `Rar (5)`
+- **`ZipMethod`**: `Stored (0)`, `Deflated (8)`
+- **`ArchiveEntry`**: `{ name: string, data: array, mode: int, mtime: int, is_dir: int }` plus `make_entry`, `make_dir_entry`, `entry_size`, `entry_is_dir`, `format_name`
 
 ---
 
@@ -148,13 +197,6 @@ Run the automated test suite using `alya test`:
 
 ```bash
 alya test
-```
-
-Exercise feature selection (the `extras` slice is default-on):
-
-```bash
-alya test --features extras
-alya test --no-default-features
 ```
 
 Generate static API documentation:
@@ -169,7 +211,7 @@ Run the benchmark suite:
 alya run benches/bench_basic.alya
 ```
 
-Run the example demo:
+Run the demonstration:
 
 ```bash
 alya run examples/demo.alya
@@ -186,15 +228,6 @@ Run static code linter:
 ```bash
 alya lint . --check
 ```
-
----
-
-### 💻 Developer Tooling & VS Code Integration
-
-This package comes preconfigured with recommended workspace settings and tasks for **Visual Studio Code**:
-- **LSP & Formatting**: Auto-formatting on save and real-time Language Server diagnostics via `alya-lang.vscode-alya`.
-- **DAP Debugging**: Launch configurations in `.vscode/launch.json` ready for interactive step-debugging via `F5`.
-- **Predefined Tasks**: Press `Ctrl+Shift+B` or run tasks (`Test`, `Lint`, `Format`, `Build Docs`) directly from the Command Palette.
 
 ---
 
@@ -218,4 +251,4 @@ Contributions are welcome! Please follow these steps:
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License. See [LICENSE](LICENSE) for details. ZIP and TAR are open container formats; RAR is proprietary and intentionally unsupported.

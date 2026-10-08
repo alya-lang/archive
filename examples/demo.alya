@@ -8,155 +8,61 @@ function main()
     say ""
 
     # ───────────────────────────────────────────────────────────
-    # 1. Basic Facade Greeting
+    # 1. Build An Entry Set
     # ───────────────────────────────────────────────────────────
-    say "--- 1. Facade Greeting ---"
-    let greeting_default = pkg::hello()
-    say "Default: " + greeting_default
-
-    let greeting_custom = pkg::hello("Alya Developer")
-    say "Custom:  " + greeting_custom
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 2. Enumeration Values
-    # ───────────────────────────────────────────────────────────
-    say "--- 2. Enumeration Values ---"
-    say "ArchiveStatus.Pending  = " + str(pkg::ArchiveStatus.Pending)
-    say "ArchiveStatus.Active   = " + str(pkg::ArchiveStatus.Active)
-    say "ArchiveStatus.Archived = " + str(pkg::ArchiveStatus.Archived)
-    say "ArchiveStatus.Error    = " + str(pkg::ArchiveStatus.Error)
-
-    say "ArchivePriority.Low      = " + str(pkg::ArchivePriority.Low)
-    say "ArchivePriority.Normal   = " + str(pkg::ArchivePriority.Normal)
-    say "ArchivePriority.High     = " + str(pkg::ArchivePriority.High)
-    say "ArchivePriority.Critical = " + str(pkg::ArchivePriority.Critical)
-
-    say "ArchiveStyle.Standard = " + str(pkg::ArchiveStyle.Standard)
-    say "ArchiveStyle.Formal   = " + str(pkg::ArchiveStyle.Formal)
-    say "ArchiveStyle.Casual   = " + str(pkg::ArchiveStyle.Casual)
-    say ""
+    say "--- 1. Entry Set ---"
+    let entries = [
+        pkg::make_text_entry("hello.txt", "Hello, Alya!"),
+        pkg::make_text_entry("config/app.json", "{\"status\": \"ok\"}"),
+        pkg::make_dir_entry("assets")
+    ]
+    say "Entries: " + str(len(entries))
 
     # ───────────────────────────────────────────────────────────
-    # 3. Struct Models & Constructors
+    # 2. TAR Round-Trip
     # ───────────────────────────────────────────────────────────
-    say "--- 3. Struct Models & Constructors ---"
-    let cfg = pkg::new_config("Community", 5, pkg::ArchivePriority.High, pkg::ArchiveStyle.Formal)
-    say "Config Name:     " + cfg.name
-    say "Config Count:    " + str(cfg.count)
-    say "Config Priority: " + str(cfg.priority)
-    say "Config Style:    " + str(cfg.style)
-    say "Config Enabled:  " + str(cfg.enabled)
-
-    let stats = pkg::make_stats(100, 92, 6, 2)
-    say "Stats Total:     " + str(stats.total)
-    say "Stats Passed:    " + str(stats.passed)
-    say "Stats Failed:    " + str(stats.failed)
-    say "Stats Skipped:   " + str(stats.skipped)
-    say "Stats Checked:   " + str(stats.total_checked())
-    say "Stats Rate:      " + stats.success_rate()
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 4. Struct Methods & Immutability
-    # ───────────────────────────────────────────────────────────
-    say "--- 4. Struct Methods & Immutability ---"
-    say "Summary:         " + cfg.summary()
-    say "Description:     " + cfg.describe()
-    say "Is Valid:        " + str(cfg.is_valid())
-    say "Is Enabled:      " + str(cfg.is_enabled())
-
-    let updated_cfg = cfg.with_name("Core Contributors")
-    say "Updated Name:    " + updated_cfg.name
-    say "Original Name:   " + cfg.name
-
-    let critical_cfg = cfg.with_priority(pkg::ArchivePriority.Critical)
-    say "Updated Prio:    " + str(critical_cfg.priority)
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 5. Result Container Pattern
-    # ───────────────────────────────────────────────────────────
-    say "--- 5. Result Container Pattern ---"
-    let ok_res = pkg::ok_result(42, "Processed payload successfully")
-    say "Ok Result is_ok:    " + str(ok_res.is_ok())
-    say "Ok Result message:  " + ok_res.message
-    say "Ok Result unwrap:   " + ok_res.unwrap_or("fallback")
-
-    let err_res = pkg::error_result("Processing failed", ["Disk full", "Permission denied"])
-    say "Err Result is_err:  " + str(err_res.is_error())
-    say "Err Result message: " + err_res.message
-    say "Err Result unwrap:  " + err_res.unwrap_or("safe default")
-    say "Err Count:          " + str(len(err_res.errors))
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 6. Structural Duck Typing (Interfaces)
-    # ───────────────────────────────────────────────────────────
-    say "--- 6. Duck Typing (Interfaces) ---"
-    if cfg is pkg::Summarizable
-        say "Summarizable dispatch: " + pkg::format_summary(cfg)
-    end
-    if cfg is pkg::Describable
-        say "Describable dispatch:  " + pkg::format_description(cfg)
+    say "--- 2. TAR Round-Trip ---"
+    let tar_img = pkg::pack(entries, pkg::ArchiveFormat.Tar)
+    say "Tar image bytes: " + str(len(tar_img))
+    say "Detected:        " + pkg::format_name(pkg::detect_format(tar_img))
+    let tar_back = pkg::unpack(tar_img)
+    for e in tar_back
+        say "  - " + e.name + " (" + str(pkg::entry_size(e)) + " bytes)"
     end
     say ""
 
     # ───────────────────────────────────────────────────────────
-    # 7. Workflow Processing & Batching
+    # 3. ZIP Round-Trip
     # ───────────────────────────────────────────────────────────
-    say "--- 7. Workflow Processing & Batching ---"
-    let single_res = pkg::process("Analytics", 3, pkg::ArchivePriority.High)
-    say "Single Process Result: " + pkg::format_result(single_res)
-
-    let items = ["Alpha", "Beta", "Gamma"]
-    let batch_res = pkg::process_batch(items)
-    say "Batch count: " + str(len(batch_res))
-    for b in batch_res
-        say "  - " + b
-    end
+    say "--- 3. ZIP Round-Trip ---"
+    let zip_img = pkg::pack(entries, pkg::ArchiveFormat.Zip)
+    say "Zip image bytes: " + str(len(zip_img))
+    say "Detected:        " + pkg::format_name(pkg::detect_format(zip_img))
+    say "Listed:          " + str(len(pkg::list_names(zip_img))) + " entries"
+    let first = pkg::find_entry(pkg::unpack(zip_img), "hello.txt")
+    say "Extracted:       " + pkg::entry_text(first)
     say ""
 
     # ───────────────────────────────────────────────────────────
-    # 8. Control Flow & Pattern Matching Utilities
+    # 4. TAR.GZ Round-Trip
     # ───────────────────────────────────────────────────────────
-    say "--- 8. Utility Functions ---"
-    say "Clamp (-5 in [0, 100]):  " + str(pkg::clamp(-5, 0, 100))
-    say "Clamp (50 in [0, 100]):  " + str(pkg::clamp(50, 0, 100))
-    say "Clamp (150 in [0, 100]): " + str(pkg::clamp(150, 0, 100))
-
-    say "Pluralize (1):           " + pkg::pluralize(1, "item", "items")
-    say "Pluralize (5):           " + pkg::pluralize(5, "item", "items")
-
-    let repeated = pkg::repeat_string("echo", 3)
-    say "Repeat string count:     " + str(len(repeated))
+    say "--- 4. TAR.GZ Round-Trip ---"
+    let tgz_img = pkg::targz_pack(entries)
+    say "Tarball bytes: " + str(len(tgz_img))
+    say "Detected:      " + pkg::format_name(pkg::detect_format(tgz_img))
+    say "Unpacked:      " + str(len(pkg::targz_unpack(tgz_img))) + " entries"
     say ""
 
     # ───────────────────────────────────────────────────────────
-    # 9. Destructuring: Tuples & Maps
+    # 5. File Persistence
     # ───────────────────────────────────────────────────────────
-    say "--- 9. Destructuring ---"
-    let (label, count) = ("example", 42)
-    say "Tuple label: " + label
-    say "Tuple count: " + str(count)
-
-    let info = { "package": "archive", "version": "0.1.0" }
-    let { package: pkg_name, version: pkg_ver } = info
-    say "Map package: " + pkg_name
-    say "Map version: " + pkg_ver
+    say "--- 5. File Persistence ---"
+    pkg::pack_file("./demo_archive.zip", entries, pkg::ArchiveFormat.Zip)
+    let loaded = pkg::unpack_file("./demo_archive.zip")
+    say "Reloaded entries: " + str(len(loaded))
+    remove_file("./demo_archive.zip")
     say ""
 
-    # ───────────────────────────────────────────────────────────
-    # 10. Feature-Gated API (`extras`, default-on)
-    # ───────────────────────────────────────────────────────────
-    say "--- 10. Feature-Gated Extras ---"
-    @cfg(feature = "extras")
-    say "Extras greeting: " + pkg::extra_greeting("Developer")
-    @cfg(not(feature = "extras"))
-    say "Extras greeting: (disabled — rebuild with --features extras)"
-    say ""
-
-    say ""
     say "Done!"
 end
 

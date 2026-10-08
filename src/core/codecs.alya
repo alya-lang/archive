@@ -1,0 +1,35 @@
+## Archive Gzip Codec Slice
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## TAR.GZ (`*.tar.gz` / `*.tgz`) packing through `compress` codecs for
+## compression plus exact-size native decompression (see `gunzip_exact`).
+
+import "./tar.alya"
+import "./file.alya"
+import "compress" as compress_pkg
+
+## Packs entries into a gzip-compressed tarball image.
+##
+## ### Parameters
+## - `entries`: Array of `ArchiveEntry` structs to store.
+##
+## ### Returns
+## Gzip-compressed tar image as a byte array.
+pub function targz_pack(entries) -> array
+    return compress_pkg::gzip(tar_build(entries))
+end
+
+## Unpacks a gzip-compressed tarball image back into entry records.
+##
+## Decompression targets the ISIZE-declared exact size, so tarballs of any
+## size unpack without output-growth limits. Only single-member gzip
+## streams are supported.
+##
+## ### Parameters
+## - `data`: Gzip-compressed tar image byte array.
+##
+## ### Returns
+## Array of `ArchiveEntry` structs, or throws on corrupt input.
+pub function targz_unpack(data) -> array
+    return tar_parse(gunzip_exact(data))
+end

@@ -1,0 +1,189 @@
+## Archive Binary File Bridge
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Binary-safe file persistence plus CRC-32 integrity, backed by the bundled
+## native engine (`c/archive.c`). Language-level `read_file` / `write_file`
+## treat strings as NUL-terminated, so raw archive images (which freely hold
+## NUL bytes) must cross the file boundary here, never as strings.
+
+import "../ffi.alya"
+import "./bytes.alya"
+
+## Saves a byte array to disk without any text encoding or NUL truncation.
+##
+## ### Parameters
+## - `path`: Destination file path (overwritten).
+## - `data`: Byte array to persist.
+##
+## ### Returns
+## `1` on success, or throws an error.
+pub function save_bytes(path: string, data) -> int
+    let n = len(data)
+    let p = alloc(n + 1)
+    let i = 0
+    while i < n
+        poke_byte(p, i, data[i])
+        i += 1
+    end
+    let rc = alya_archive_write_bytes(path, p, n)
+    free(p)
+    if rc != 0
+        throw "archive: failed to write file '" + path + "', error: " + str(rc)
+    end
+    return true
+end
+
+## Loads a file from disk into a byte array, preserving every byte.
+##
+## ### Parameters
+## - `path`: Source file path.
+##
+## ### Returns
+## Byte array with the exact file contents, or throws an error.
+pub function load_bytes(path: string) -> array
+    let p_out = alloc(8)
+    let p_len = alloc(8)
+    poke_int(p_out, 0, 0)
+    poke_int(p_len, 0, 0)
+    let rc = alya_archive_read_bytes(path, p_out, p_len)
+    if rc != 0
+        free(p_out)
+        free(p_len)
+        throw "archive: failed to read file '" + path + "', error: " + str(rc)
+    end
+    let out_ptr = peek_int(p_out, 0)
+    let out_len = peek_int(p_len, 0)
+    free(p_out)
+    free(p_len)
+    let result = []
+    let i = 0
+    while i < out_len
+        result.push(peek_byte(out_ptr, i))
+        i += 1
+    end
+    alya_archive_free_buffer(out_ptr)
+    return result
+end
+
+## Computes the IEEE CRC-32 checksum of a byte array.
+##
+## ### Parameters
+## - `data`: Byte array to checksum.
+##
+## ### Returns
+## Unsigned 32-bit CRC value (`0..4294967295`).
+##
+## ### Examples
+## ```alya
+## let crc = archive_crc32([49, 50, 51]) # CRC-32 of "123"
+## ```
+pub function archive_crc32(data) -> int
+    let n = len(data)
+    if n == 0
+        return 0
+    end
+    let p = alloc(n)
+    poke_octets(p, data)
+    let crc = alya_archive_crc32(0, p, n)
+    free(p)
+    return crc
+end
+
+## Inflates a raw DEFLATE payload into an exactly-sized buffer.
+##
+## Uses the fixed-buffer native path (no output growth): the caller must
+## know the exact decompressed size, which ZIP central directory records
+## always provide. The auto-allocating `compress` helpers are deliberately
+## avoided here (they fail past their first buffer estimate, see
+## alya-lang/compress#5).
+##
+## ### Parameters
+## - `payload`: Compressed payload byte array.
+## - `expected_len`: Exact decompressed byte count.
+##
+## ### Returns
+## Decompressed byte array, or throws an error.
+pub function inflate_exact(payload, expected_len: int) -> array
+    if expected_len == 0
+        return []
+    end
+    if len(payload) == 0
+        throw "archive: truncated deflate payload, expected " + str(expected_len) + " bytes"
+    end
+    let in_p = alloc(len(payload))
+    poke_octets(in_p, payload)
+    let out_p = alloc(expected_len)
+    let p_actual = alloc(8)
+    poke_int(p_actual, 0, 0)
+    let rc = alya_archive_inflate_exact(in_p, len(payload), out_p, expected_len, p_actual)
+    free(in_p)
+    if rc != 0
+        free(out_p)
+        free(p_actual)
+        throw "archive: deflate payload failed integrity check, error: " + str(rc)
+    end
+    let result = ptr_to_bytes(out_p, expected_len)
+    free(out_p)
+    free(p_actual)
+    return result
+end
+
+## Decompresses a single-member gzip image into its ISIZE-declared size.
+##
+## The expected size is read from the gzip footer (ISIZE field), so no
+## output growth is ever required on the native side. Multi-member gzip
+## streams are rejected.
+##
+## ### Parameters
+## - `data`: Gzip image byte array.
+##
+## ### Returns
+## Decompressed byte array, or throws an error.
+pub function gunzip_exact(data) -> array
+    let n = len(data)
+    if n < 18
+        throw "archive: truncated gzip image"
+    end
+    let want = get_u32le(data, n - 4)
+    let cap = want
+    if cap == 0
+        cap = 1
+    end
+    let in_p = alloc(n)
+    poke_octets(in_p, data)
+    let out_p = alloc(cap)
+    let p_actual = alloc(8)
+    poke_int(p_actual, 0, 0)
+    let rc = alya_archive_gunzip_exact(in_p, n, out_p, cap, p_actual)
+    free(in_p)
+    if rc != 0
+        free(out_p)
+        free(p_actual)
+        throw "archive: gzip image failed integrity check, error: " + str(rc)
+    end
+    let actual = peek_int(p_actual, 0)
+    free(p_actual)
+    let result = ptr_to_bytes(out_p, actual)
+    free(out_p)
+    return result
+end
+
+# Pushes a byte array into a native buffer.
+function poke_octets(p, data)
+    let i = 0
+    while i < len(data)
+        poke_byte(p, i, data[i])
+        i += 1
+    end
+end
+
+# Copies a native byte buffer into a new Alya byte array.
+function ptr_to_bytes(p, count: int) -> array
+    let out = []
+    let i = 0
+    while i < count
+        out.push(peek_byte(p, i))
+        i += 1
+    end
+    return out
+end

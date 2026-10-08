@@ -1,0 +1,246 @@
+## Archive ZIP Engine
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## ZIP container builder and parser. Stored entries are dependency-free;
+## deflated entries use `compress` codecs (default-on `compress` feature).
+## Limits (v0.1.0): no ZIP64 (4 GiB cap), no encryption, no spanning.
+
+import "../types.alya"
+import "./bytes.alya"
+import "./file.alya"
+import "compress" as compress_pkg
+
+## ZIP local file header signature (`PK\x03\x04` as little-endian u32).
+pub const ZIP_LOCAL_SIG = 67324752
+
+## ZIP central directory record signature (`PK\x01\x02` as little-endian u32).
+pub const ZIP_CENTRAL_SIG = 33766576
+
+## ZIP end-of-central-directory signature (`PK\x05\x06` as little-endian u32).
+pub const ZIP_EOCD_SIG = 101010256
+
+## Builds a ZIP archive image from an array of `ArchiveEntry` records.
+##
+## ### Parameters
+## - `entries`: Array of `ArchiveEntry` structs to store.
+## - `method`: `0` for stored, `8` for deflated (needs `compress`).
+##
+## ### Returns
+## Archive image as a byte array with central directory plus EOCD.
+pub function zip_build(entries, method: int = 0) -> array
+    if method != 0 and method != 8
+        throw "archive: unsupported zip method, expected 0 (stored) or 8 (deflated)"
+    end
+    let out = []
+    let central = []
+    let count = 0
+    for e in entries
+        zip_append_entry(out, central, e, method)
+        count += 1
+    end
+    let cd_off = len(out)
+    bytes_append(out, central)
+    let eocd = bytes_zero(22)
+    put_u32le(eocd, 0, ZIP_EOCD_SIG)
+    put_u16le(eocd, 8, count)
+    put_u16le(eocd, 10, count)
+    put_u32le(eocd, 12, len(central))
+    put_u32le(eocd, 16, cd_off)
+    bytes_append(out, eocd)
+    return out
+end
+
+## Parses a ZIP archive image back into entry records.
+##
+## Every entry payload is CRC-32 verified against its central directory
+## record; deflated entries are inflated through `compress` codecs.
+##
+## ### Parameters
+## - `data`: Archive image byte array.
+##
+## ### Returns
+## Array of `ArchiveEntry` structs, or throws on corrupt input.
+pub function zip_parse(data) -> array
+    let n = len(data)
+    let eocd_off = zip_find_eocd(data)
+    if eocd_off < 0
+        throw "archive: invalid zip data (end-of-central-directory not found)"
+    end
+    let count = get_u16le(data, eocd_off + 8)
+    let cd_off = get_u32le(data, eocd_off + 16)
+    let entries = []
+    let pos = cd_off
+    let k = 0
+    while k < count
+        if pos + 46 > n or get_u32le(data, pos) != ZIP_CENTRAL_SIG
+            throw "archive: corrupt zip central directory"
+        end
+        let method = get_u16le(data, pos + 10)
+        let crc = get_u32le(data, pos + 16)
+        let comp_len = get_u32le(data, pos + 20)
+        let uncomp_len = get_u32le(data, pos + 24)
+        let name_len = get_u16le(data, pos + 28)
+        let extra_len = get_u16le(data, pos + 30)
+        let comment_len = get_u16le(data, pos + 32)
+        let ext_attr = get_u32le(data, pos + 38)
+        let local_off = get_u32le(data, pos + 42)
+        let name = bytes_to_string(bytes_slice(data, pos + 46, name_len))
+        pos += 46 + name_len + extra_len + comment_len
+        entries.push(zip_read_entry(data, n, name, method, crc, comp_len, uncomp_len, ext_attr, local_off))
+        k += 1
+    end
+    return entries
+end
+
+## Lists entry names of a ZIP archive image via its central directory.
+##
+## ### Parameters
+## - `data`: Archive image byte array.
+##
+## ### Returns
+## Array of entry name strings in archive order.
+pub function zip_names(data) -> array
+    let parsed = zip_parse(data)
+    let names = []
+    for e in parsed
+        names.push(e.name)
+    end
+    return names
+end
+
+# Reads one entry payload through its local file header with verification.
+function zip_read_entry(data, n: int, name: string, method: int, crc: int, comp_len: int, uncomp_len: int, ext_attr: int, local_off: int) -> ArchiveEntry
+    let nb = bytes_from_string(name)
+    if len(nb) == 0
+        throw "archive: corrupt zip entry with empty name"
+    end
+    if local_off + 30 > n or get_u32le(data, local_off) != ZIP_LOCAL_SIG
+        throw "archive: corrupt zip local header for entry: " + name
+    end
+    let data_off = local_off + 30 + get_u16le(data, local_off + 26) + get_u16le(data, local_off + 28)
+    if data_off + comp_len > n
+        throw "archive: truncated zip payload for entry: " + name
+    end
+    let content = bytes_slice(data, data_off, comp_len)
+    if method == 8
+        content = inflate_exact(content, uncomp_len)
+    elif method != 0
+        throw "archive: unsupported zip method: " + str(method)
+    end
+    if len(content) != uncomp_len
+        throw "archive: zip size mismatch for entry: " + name
+    end
+    if archive_crc32(content) != crc
+        throw "archive: zip crc mismatch for entry: " + name
+    end
+    let is_dir = 0
+    if nb[len(nb) - 1] == 47
+        is_dir = 1
+    end
+    let mode = bit_and(bit_shr(ext_attr, 16), 4095)
+    if mode == 0
+        mode = 420
+        if is_dir == 1
+            mode = 493
+        end
+    end
+    return ArchiveEntry {
+        name: name,
+        data: content,
+        mode: mode,
+        mtime: 0,
+        is_dir: is_dir
+    }
+end
+
+# Appends one local file header plus payload and its central record.
+function zip_append_entry(out, central, e: ArchiveEntry, method: int)
+    let name_bytes = bytes_from_string(e.name)
+    if len(name_bytes) == 0 or len(name_bytes) > 65535
+        throw "archive: zip entry name must be 1..65535 bytes"
+    end
+    if len(e.data) > 4294967295
+        throw "archive: zip entry exceeds 4 GiB (zip64 is unsupported in v0.1.0)"
+    end
+    let use_deflate = 0
+    if method == 8 and e.is_dir == 0 and len(e.data) > 0
+        use_deflate = 1
+    end
+    # NOTE: the payload is selected inline, never returned through a
+    # helper call. Returning a borrowed array across a call boundary
+    # corrupts the heap on repeated builds (upstream Alya runtime/GC
+    # issue alya-lang/alya#125: the returned alias loses its GC root
+    # and is reclaimed while still referenced).
+    let payload = e.data
+    if use_deflate == 1
+        payload = compress_pkg::deflate(e.data)
+    end
+    let m = 0
+    if use_deflate == 1
+        m = 8
+    end
+    let crc = archive_crc32(e.data)
+    let local_off = len(out)
+    let lh = bytes_zero(30)
+    put_u32le(lh, 0, ZIP_LOCAL_SIG)
+    put_u16le(lh, 4, 20)
+    put_u16le(lh, 6, 0)
+    put_u16le(lh, 8, m)
+    put_u16le(lh, 10, 0)
+    put_u16le(lh, 12, 22561)
+    put_u32le(lh, 14, crc)
+    put_u32le(lh, 18, len(payload))
+    put_u32le(lh, 22, len(e.data))
+    put_u16le(lh, 26, len(name_bytes))
+    put_u16le(lh, 28, 0)
+    bytes_append(out, lh)
+    bytes_append(out, name_bytes)
+    bytes_append(out, payload)
+    let ch = bytes_zero(46)
+    put_u32le(ch, 0, ZIP_CENTRAL_SIG)
+    put_u16le(ch, 4, 20)
+    put_u16le(ch, 6, 20)
+    put_u16le(ch, 8, 0)
+    put_u16le(ch, 10, m)
+    put_u16le(ch, 12, 0)
+    put_u16le(ch, 14, 22561)
+    put_u32le(ch, 16, crc)
+    put_u32le(ch, 20, len(payload))
+    put_u32le(ch, 24, len(e.data))
+    put_u16le(ch, 28, len(name_bytes))
+    put_u16le(ch, 30, 0)
+    put_u16le(ch, 32, 0)
+    put_u16le(ch, 34, 0)
+    put_u16le(ch, 36, 0)
+    let ext_attr = bit_shl(e.mode, 16)
+    if e.is_dir == 1
+        ext_attr = bit_or(ext_attr, 16)
+    end
+    put_u32le(ch, 38, ext_attr)
+    put_u32le(ch, 42, local_off)
+    bytes_append(central, ch)
+    bytes_append(central, name_bytes)
+end
+
+# Locates the end-of-central-directory record, tolerating a comment.
+function zip_find_eocd(data) -> int
+    let n = len(data)
+    if n < 22
+        return -1
+    end
+    let start = n - 22
+    let stop = n - 22 - 65557
+    if stop < 0
+        stop = 0
+    end
+    let i = start
+    while i >= stop
+        if get_u32le(data, i) == ZIP_EOCD_SIG
+            if i + 22 + get_u16le(data, i + 20) == n
+                return i
+            end
+        end
+        i -= 1
+    end
+    return -1
+end
