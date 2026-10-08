@@ -94,8 +94,10 @@ end
 ## Uses the fixed-buffer native path (no output growth): the caller must
 ## know the exact decompressed size, which ZIP central directory records
 ## always provide. The auto-allocating `compress` helpers are deliberately
-## avoided here: pinned `compress` v0.1.0 fails past its first buffer
-## estimate (alya-lang/compress#5, fixed upstream but unreleased).
+## avoided here: pinned `compress` v0.1.0 originally failed past its
+## first buffer estimate (alya-lang/compress#5, since fixed and
+## re-released under the same tag). The exact-size path stays by design:
+## deterministic, single-shot, no growth loop involved.
 ##
 ## ### Parameters
 ## - `payload`: Compressed payload byte array.
