@@ -4,21 +4,23 @@
 import "std/test"
 import "../src/lib.alya" as pkg
 
-function main()
-    let runner = bench_runner("archive Micro-Benchmarks")
-
+function bench_entries()
     let payload = []
     let i = 0
     while i < 2048
         payload.push(i % 251)
         i += 1
     end
-    let entries = [
+    return [
         pkg::make_text_entry("hello.txt", "Hello, Alya! Benchmark payload."),
         pkg::make_entry("data/blob.bin", payload),
         pkg::make_dir_entry("assets")
     ]
+end
 
+@cfg(feature = "tar")
+function bench_tar(runner)
+    let entries = bench_entries()
     # Bench 1: tar_build — 500 iterations
     bench_start(runner, 500)
     let a = 0
@@ -27,7 +29,6 @@ function main()
         a += 1
     end
     bench_stop(runner, "tar_build 3 entries 500x")
-
     # Bench 2: tar_parse — 500 iterations
     let tar_img = pkg::tar_build(entries)
     bench_start(runner, 500)
@@ -37,7 +38,15 @@ function main()
         b += 1
     end
     bench_stop(runner, "tar_parse 3 entries 500x")
+end
 
+@cfg(not(feature = "tar"))
+function bench_tar(runner)
+end
+
+@cfg(feature = "zip")
+function bench_zip(runner)
+    let entries = bench_entries()
     # Bench 3: zip_build stored — 500 iterations
     bench_start(runner, 500)
     let c = 0
@@ -46,7 +55,6 @@ function main()
         c += 1
     end
     bench_stop(runner, "zip_build stored 500x")
-
     # Bench 4: zip_parse stored — 500 iterations
     let zip_img = pkg::zip_build(entries, 0)
     bench_start(runner, 500)
@@ -56,25 +64,6 @@ function main()
         d += 1
     end
     bench_stop(runner, "zip_parse stored 500x")
-
-    # Bench 5: archive_crc32 over 2 KiB — 2000 iterations
-    bench_start(runner, 2000)
-    let e = 0
-    while e < 2000
-        pkg::archive_crc32(payload)
-        e += 1
-    end
-    bench_stop(runner, "archive_crc32 2KiB 2000x")
-
-    # Bench 6: detect_format — 20000 iterations
-    bench_start(runner, 20000)
-    let f = 0
-    while f < 20000
-        pkg::detect_format(zip_img)
-        f += 1
-    end
-    bench_stop(runner, "detect_format 20000x")
-
     # Bench 7: zip_build deflated — 100 iterations
     bench_start(runner, 100)
     let g = 0
@@ -83,6 +72,43 @@ function main()
         g += 1
     end
     bench_stop(runner, "zip_build deflated 100x")
+end
+
+@cfg(not(feature = "zip"))
+function bench_zip(runner)
+end
+
+function bench_core(runner)
+    let payload = []
+    let pi = 0
+    while pi < 2048
+        payload.push(pi % 251)
+        pi += 1
+    end
+    # Bench 5: archive_crc32 over 2 KiB — 2000 iterations
+    bench_start(runner, 2000)
+    let e = 0
+    while e < 2000
+        pkg::archive_crc32(payload)
+        e += 1
+    end
+    bench_stop(runner, "archive_crc32 2KiB 2000x")
+    # Bench 6: detect_format — 20000 iterations (core magic bytes)
+    bench_start(runner, 20000)
+    let f = 0
+    while f < 20000
+        pkg::detect_format([80, 75, 3, 4, 20, 0])
+        f += 1
+    end
+    bench_stop(runner, "detect_format 20000x")
+end
+
+function main()
+    let runner = bench_runner("archive Micro-Benchmarks")
+
+    bench_tar(runner)
+    bench_zip(runner)
+    bench_core(runner)
 
     bench_summary(runner)
 end

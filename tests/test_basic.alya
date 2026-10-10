@@ -4,10 +4,7 @@
 import "std/test"
 import "../src/lib.alya" as pkg
 
-function main()
-    test_suite("archive Test Suite")
-    let r = runner_new()
-
+function test_core(r)
     # ═══════════════════════════════════════════════════════════
     # 1. Entry Models & Constructors
     # ═══════════════════════════════════════════════════════════
@@ -35,14 +32,12 @@ function main()
 
     runner_assert_eq(r, pkg::ZipMethod.Stored, 0, "ZipMethod.Stored == 0")
     runner_assert_eq(r, pkg::ZipMethod.Deflated, 8, "ZipMethod.Deflated == 8")
-
     # ═══════════════════════════════════════════════════════════
     # 2. CRC-32 Integrity
     # ═══════════════════════════════════════════════════════════
     runner_assert_eq(r, pkg::archive_crc32([]), 0, "crc of empty input is 0")
     runner_assert_eq(r, pkg::archive_crc32([49, 50, 51, 52, 53, 54, 55, 56, 57]), 3421780262, "crc32 of '123456789' matches IEEE vector")
     runner_assert_eq(r, pkg::archive_crc32([0]), 3523407757, "crc32 of single zero byte matches vector")
-
     # ═══════════════════════════════════════════════════════════
     # 3. Byte / Octal Codec Round-Trips
     # ═══════════════════════════════════════════════════════════
@@ -60,7 +55,6 @@ function main()
     runner_assert_eq(r, bytes_equal([1, 2, 3], [1, 2, 3]), true, "bytes_equal accepts identical arrays")
     runner_assert_eq(r, bytes_equal([1, 2, 3], [1, 2, 4]), false, "bytes_equal rejects differing arrays")
     runner_assert_eq(r, bytes_equal([1, 2], [1, 2, 3]), false, "bytes_equal rejects length mismatch")
-
     # ═══════════════════════════════════════════════════════════
     # 4. Format Detection
     # ═══════════════════════════════════════════════════════════
@@ -70,7 +64,10 @@ function main()
     runner_assert_eq(r, pkg::detect_format([82, 97, 114, 33, 26, 7]), pkg::ArchiveFormat.Rar, "Rar! magic detects Rar")
     runner_assert_eq(r, pkg::detect_format([1, 2, 3]), pkg::ArchiveFormat.Unknown, "random bytes detect Unknown")
     runner_assert_eq(r, pkg::detect_format([]), pkg::ArchiveFormat.Unknown, "empty input detects Unknown")
+end
 
+@cfg(feature = "tar")
+function test_tar(r)
     # ═══════════════════════════════════════════════════════════
     # 5. TAR Build / Parse Round-Trip
     # ═══════════════════════════════════════════════════════════
@@ -112,7 +109,30 @@ function main()
     let tar_listed = pkg::tar_names(tar_img)
     runner_assert_eq(r, len(tar_listed), 4, "tar_names lists every entry")
     runner_assert_str_eq(r, tar_listed[2], "data/blob.bin", "tar_names keeps nested path")
+    # ═══════════════════════════════════════════════════════════
+    # 10. Repeated Builds Over Shared Entries (alya#125 regression)
+    # ═══════════════════════════════════════════════════════════
+    # Borrowed payload arrays once lost their GC root when returned
+    # through a helper call, corrupting rebuild loops. Hammer the same
+    # shared entries: every image must stay byte-identical.
+    let first_tar = pkg::tar_build(tar_entries)
+    let tar_stable = true
+    let rt = 0
+    while rt < 50
+        if len(pkg::tar_build(tar_entries)) != len(first_tar)
+            tar_stable = false
+        end
+        rt += 1
+    end
+    runner_assert_eq(r, tar_stable, true, "50 repeated tar_builds stay identical")
+end
 
+@cfg(not(feature = "tar"))
+function test_tar(r)
+end
+
+@cfg(feature = "zip")
+function test_zip(r)
     # ═══════════════════════════════════════════════════════════
     # 6. ZIP Stored Build / Parse Round-Trip
     # ═══════════════════════════════════════════════════════════
@@ -136,67 +156,12 @@ function main()
     let found = pkg::find_entry(zip_back, "data/blob.bin")
     runner_assert_eq(r, found is null, false, "find_entry locates stored entry")
     runner_assert_eq(r, pkg::find_entry(zip_back, "missing.txt") is null, true, "find_entry returns null when absent")
-
-    # ═══════════════════════════════════════════════════════════
-    # 7. Unified Facade Dispatch
-    # ═══════════════════════════════════════════════════════════
-    let packed_tar = pkg::pack(tar_entries, pkg::ArchiveFormat.Tar)
-    runner_assert_eq(r, bytes_equal(packed_tar, tar_img), true, "pack(Tar) matches tar_build output")
-    let unpacked_auto = pkg::unpack(packed_tar)
-    runner_assert_eq(r, len(unpacked_auto), 4, "unpack auto-detects tar image")
-    let unpacked_zip = pkg::unpack(zip_img, pkg::ArchiveFormat.Zip)
-    runner_assert_eq(r, len(unpacked_zip), 4, "unpack with explicit Zip format works")
-    let facade_names = pkg::list_names(zip_img)
-    runner_assert_str_eq(r, facade_names[0], "hello.txt", "list_names auto-detects and lists zip")
-    runner_assert_str_eq(r, pkg::list_names(packed_tar)[3], "assets/", "list_names covers tar dir entry")
-
-    # ═══════════════════════════════════════════════════════════
-    # 8. Binary-Safe File Persistence
-    # ═══════════════════════════════════════════════════════════
-    let raw_path = "./target_test_archive_raw.bin"
-    pkg::save_archive(raw_path, zip_bin)
-    let raw_back = pkg::load_archive(raw_path)
-    runner_assert_eq(r, bytes_equal(raw_back, zip_bin), true, "raw bytes with NUL survive file round-trip")
-    remove_file(raw_path)
-
-    let tar_path = "./target_test_archive.tar"
-    pkg::pack_file(tar_path, tar_entries, pkg::ArchiveFormat.Tar)
-    let tar_file_back = pkg::unpack_file(tar_path)
-    runner_assert_eq(r, len(tar_file_back), 4, "tar pack_file/unpack_file round-trips")
-    runner_assert_eq(r, bytes_equal(tar_file_back[2].data, big), true, "tar file round-trip preserves binary payload")
-    remove_file(tar_path)
-
-    let zip_path = "./target_test_archive.zip"
-    pkg::pack_file(zip_path, zip_entries, pkg::ArchiveFormat.Zip)
-    let zip_file_back = pkg::unpack_file(zip_path)
-    runner_assert_eq(r, len(zip_file_back), 4, "zip pack_file/unpack_file round-trips")
-    runner_assert_eq(r, bytes_equal(zip_file_back[2].data, zip_bin), true, "zip file round-trip preserves binary payload")
-    remove_file(zip_path)
-
-    # ═══════════════════════════════════════════════════════════
-    # 9. Compressed Containers (via compress codecs)
-    # ═══════════════════════════════════════════════════════════
     let zip_deflated = pkg::zip_build(zip_entries, 8)
     runner_assert_eq(r, pkg::detect_format(zip_deflated), pkg::ArchiveFormat.Zip, "deflated zip still detects as Zip")
     let zip_inflated = pkg::zip_parse(zip_deflated)
     runner_assert_eq(r, len(zip_inflated), 4, "deflated zip parse returns all entries")
     runner_assert_eq(r, bytes_equal(zip_inflated[2].data, zip_bin), true, "deflated zip payload inflates exactly")
     runner_assert_str_eq(r, pkg::entry_text(zip_inflated[0]), "Hello, Alya!", "deflated zip text inflates exactly")
-
-    let tgz_img = pkg::targz_pack(tar_entries)
-    runner_assert_eq(r, pkg::detect_format(tgz_img), pkg::ArchiveFormat.TarGz, "packed tarball detects as TarGz")
-    let tgz_back = pkg::targz_unpack(tgz_img)
-    runner_assert_eq(r, len(tgz_back), 4, "tarball unpack returns all entries")
-    runner_assert_eq(r, bytes_equal(tgz_back[2].data, big), true, "tarball round-trip preserves binary payload")
-    let tgz_auto = pkg::unpack(tgz_img)
-    runner_assert_str_eq(r, tgz_auto[0].name, "hello.txt", "unpack auto-detects TarGz image")
-
-    let tgz_path = "./target_test_archive.tgz"
-    pkg::pack_file(tgz_path, tar_entries, pkg::ArchiveFormat.TarGz)
-    let tgz_file_back = pkg::unpack_file(tgz_path)
-    runner_assert_eq(r, len(tgz_file_back), 4, "tarball pack_file/unpack_file round-trips")
-    remove_file(tgz_path)
-
     # ═══════════════════════════════════════════════════════════
     # 10. Repeated Builds Over Shared Entries (alya#125 regression)
     # ═══════════════════════════════════════════════════════════
@@ -231,17 +196,185 @@ function main()
 
     let loop_parsed = pkg::zip_parse(pkg::zip_build(shared_entries, 0))
     runner_assert_eq(r, bytes_equal(loop_parsed[1].data, zip_bin), true, "looped rebuild preserves binary payload")
+end
 
-    let first_tar = pkg::tar_build(tar_entries)
-    let tar_stable = true
-    let rt = 0
-    while rt < 50
-        if len(pkg::tar_build(tar_entries)) != len(first_tar)
-            tar_stable = false
-        end
-        rt += 1
+@cfg(not(feature = "zip"))
+function test_zip(r)
+end
+
+@cfg(feature = "targz")
+function test_targz(r)
+    let big = []
+    let bi = 0
+    while bi < 600
+        big.push(bi % 251)
+        bi += 1
     end
-    runner_assert_eq(r, tar_stable, true, "50 repeated tar_builds stay identical")
+    let tar_entries = [
+        pkg::make_text_entry("hello.txt", "Hello, Alya!", 420, 1234567890),
+        pkg::make_entry("empty.bin"),
+        pkg::make_entry("data/blob.bin", big, 384, 1234567890),
+        pkg::make_dir_entry("assets")
+    ]
+    let tgz_img = pkg::targz_pack(tar_entries)
+    runner_assert_eq(r, pkg::detect_format(tgz_img), pkg::ArchiveFormat.TarGz, "packed tarball detects as TarGz")
+    let tgz_back = pkg::targz_unpack(tgz_img)
+    runner_assert_eq(r, len(tgz_back), 4, "tarball unpack returns all entries")
+    runner_assert_eq(r, bytes_equal(tgz_back[2].data, big), true, "tarball round-trip preserves binary payload")
+    let tgz_auto = pkg::unpack(tgz_img)
+    runner_assert_str_eq(r, tgz_auto[0].name, "hello.txt", "unpack auto-detects TarGz image")
+
+end
+
+@cfg(not(feature = "targz"))
+function test_targz(r)
+end
+
+@cfg(feature = "tar")
+@cfg(feature = "zip")
+function test_dispatch(r)
+    let dtar_entries = [
+        pkg::make_text_entry("hello.txt", "Hello, Alya!"),
+        pkg::make_dir_entry("assets")
+    ]
+    let dtar_direct = pkg::tar_build(dtar_entries)
+    let dzip_entries = [
+        pkg::make_text_entry("hello.txt", "Hello, Alya!"),
+        pkg::make_dir_entry("assets")
+    ]
+    let dzip_img = pkg::pack(dzip_entries, pkg::ArchiveFormat.Zip)
+    # ═══════════════════════════════════════════════════════════
+    # 7. Unified Facade Dispatch
+    # ═══════════════════════════════════════════════════════════
+    let dtar_img_packed = pkg::pack(dtar_entries, pkg::ArchiveFormat.Tar)
+    runner_assert_eq(r, bytes_equal(dtar_img_packed, dtar_direct), true, "pack(Tar) matches tar_build output")
+    let unpacked_auto = pkg::unpack(dtar_img_packed)
+    runner_assert_eq(r, len(unpacked_auto), 2, "unpack auto-detects tar image")
+    let unpacked_zip = pkg::unpack(dzip_img, pkg::ArchiveFormat.Zip)
+    runner_assert_eq(r, len(unpacked_zip), 2, "unpack with explicit Zip format works")
+    let facade_names = pkg::list_names(dzip_img)
+    runner_assert_str_eq(r, facade_names[0], "hello.txt", "list_names auto-detects and lists zip")
+    runner_assert_str_eq(r, pkg::list_names(dtar_img_packed)[1], "assets/", "list_names covers tar dir entry")
+end
+
+@cfg(any(not(feature = "tar"), not(feature = "zip")))
+function test_dispatch(r)
+end
+
+@cfg(feature = "io")
+function test_io(r)
+    # ═══════════════════════════════════════════════════════════
+    # 8. Binary-Safe File Persistence
+    # ═══════════════════════════════════════════════════════════
+    let zip_bin = [0, 1, 2, 0, 255, 0, 65, 66, 0, 128]
+    let raw_path = "./target_test_archive_raw.bin"
+    pkg::save_archive(raw_path, zip_bin)
+    let raw_back = pkg::load_archive(raw_path)
+    runner_assert_eq(r, bytes_equal(raw_back, zip_bin), true, "raw bytes with NUL survive file round-trip")
+    remove_file(raw_path)
+end
+
+@cfg(not(feature = "io"))
+function test_io(r)
+end
+
+@cfg(feature = "tar")
+@cfg(feature = "io")
+function test_tar_io(r)
+    # ═══════════════════════════════════════════════════════════
+    # 8. Binary-Safe File Persistence
+    # ═══════════════════════════════════════════════════════════
+    let big = []
+    let bi = 0
+    while bi < 600
+        big.push(bi % 251)
+        bi += 1
+    end
+    let tar_entries = [
+        pkg::make_text_entry("hello.txt", "Hello, Alya!", 420, 1234567890),
+        pkg::make_entry("empty.bin"),
+        pkg::make_entry("data/blob.bin", big, 384, 1234567890),
+        pkg::make_dir_entry("assets")
+    ]
+    let tar_path = "./target_test_archive.tar"
+    pkg::pack_file(tar_path, tar_entries, pkg::ArchiveFormat.Tar)
+    let tar_file_back = pkg::unpack_file(tar_path)
+    runner_assert_eq(r, len(tar_file_back), 4, "tar pack_file/unpack_file round-trips")
+    runner_assert_eq(r, bytes_equal(tar_file_back[2].data, big), true, "tar file round-trip preserves binary payload")
+    remove_file(tar_path)
+end
+
+@cfg(any(not(feature = "tar"), not(feature = "io")))
+function test_tar_io(r)
+end
+
+@cfg(feature = "zip")
+@cfg(feature = "io")
+function test_zip_io(r)
+    # ═══════════════════════════════════════════════════════════
+    # 8. Binary-Safe File Persistence
+    # ═══════════════════════════════════════════════════════════
+    let zip_bin = [0, 1, 2, 0, 255, 0, 65, 66, 0, 128]
+    let zip_entries = [
+        pkg::make_text_entry("hello.txt", "Hello, Alya!"),
+        pkg::make_entry("empty.bin"),
+        pkg::make_entry("data/blob.bin", zip_bin, 384, 0),
+        pkg::make_dir_entry("assets")
+    ]
+    let zip_path = "./target_test_archive.zip"
+    pkg::pack_file(zip_path, zip_entries, pkg::ArchiveFormat.Zip)
+    let zip_file_back = pkg::unpack_file(zip_path)
+    runner_assert_eq(r, len(zip_file_back), 4, "zip pack_file/unpack_file round-trips")
+    runner_assert_eq(r, bytes_equal(zip_file_back[2].data, zip_bin), true, "zip file round-trip preserves binary payload")
+    remove_file(zip_path)
+end
+
+@cfg(any(not(feature = "zip"), not(feature = "io")))
+function test_zip_io(r)
+end
+
+@cfg(feature = "targz")
+@cfg(feature = "io")
+function test_targz_io(r)
+    # ═══════════════════════════════════════════════════════════
+    # 8. Binary-Safe File Persistence
+    # ═══════════════════════════════════════════════════════════
+    let big = []
+    let bi = 0
+    while bi < 600
+        big.push(bi % 251)
+        bi += 1
+    end
+    let tar_entries = [
+        pkg::make_text_entry("hello.txt", "Hello, Alya!", 420, 1234567890),
+        pkg::make_entry("empty.bin"),
+        pkg::make_entry("data/blob.bin", big, 384, 1234567890),
+        pkg::make_dir_entry("assets")
+    ]
+    let tgz_path = "./target_test_archive.tgz"
+    pkg::pack_file(tgz_path, tar_entries, pkg::ArchiveFormat.TarGz)
+    let tgz_file_back = pkg::unpack_file(tgz_path)
+    runner_assert_eq(r, len(tgz_file_back), 4, "tarball pack_file/unpack_file round-trips")
+    remove_file(tgz_path)
+end
+
+@cfg(any(not(feature = "targz"), not(feature = "io")))
+function test_targz_io(r)
+end
+
+function main()
+    test_suite("archive Test Suite")
+    let r = runner_new()
+
+    test_core(r)
+    test_tar(r)
+    test_zip(r)
+    test_targz(r)
+    test_dispatch(r)
+    test_io(r)
+    test_tar_io(r)
+    test_zip_io(r)
+    test_targz_io(r)
 
     let failed = runner_summary(r)
     if failed > 0

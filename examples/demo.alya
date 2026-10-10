@@ -3,21 +3,17 @@
 
 import "../src/lib.alya" as pkg
 
-function main()
-    say "=== archive Package Showcase ==="
-    say ""
-
-    # ───────────────────────────────────────────────────────────
-    # 1. Build An Entry Set
-    # ───────────────────────────────────────────────────────────
-    say "--- 1. Entry Set ---"
-    let entries = [
+function demo_entries()
+    return [
         pkg::make_text_entry("hello.txt", "Hello, Alya!"),
         pkg::make_text_entry("config/app.json", "{\"status\": \"ok\"}"),
         pkg::make_dir_entry("assets")
     ]
-    say "Entries: " + str(len(entries))
+end
 
+@cfg(feature = "tar")
+function demo_tar()
+    let entries = demo_entries()
     # ───────────────────────────────────────────────────────────
     # 2. TAR Round-Trip
     # ───────────────────────────────────────────────────────────
@@ -30,7 +26,15 @@ function main()
         say "  - " + e.name + " (" + str(pkg::entry_size(e)) + " bytes)"
     end
     say ""
+end
 
+@cfg(not(feature = "tar"))
+function demo_tar()
+end
+
+@cfg(feature = "zip")
+function demo_zip()
+    let entries = demo_entries()
     # ───────────────────────────────────────────────────────────
     # 3. ZIP Round-Trip
     # ───────────────────────────────────────────────────────────
@@ -42,7 +46,15 @@ function main()
     let first = pkg::find_entry(pkg::unpack(zip_img), "hello.txt")
     say "Extracted:       " + pkg::entry_text(first)
     say ""
+end
 
+@cfg(not(feature = "zip"))
+function demo_zip()
+end
+
+@cfg(feature = "targz")
+function demo_targz()
+    let entries = demo_entries()
     # ───────────────────────────────────────────────────────────
     # 4. TAR.GZ Round-Trip
     # ───────────────────────────────────────────────────────────
@@ -52,7 +64,16 @@ function main()
     say "Detected:      " + pkg::format_name(pkg::detect_format(tgz_img))
     say "Unpacked:      " + str(len(pkg::targz_unpack(tgz_img))) + " entries"
     say ""
+end
 
+@cfg(not(feature = "targz"))
+function demo_targz()
+end
+
+@cfg(feature = "io")
+@cfg(feature = "zip")
+function demo_files()
+    let entries = demo_entries()
     # ───────────────────────────────────────────────────────────
     # 5. File Persistence
     # ───────────────────────────────────────────────────────────
@@ -62,6 +83,27 @@ function main()
     say "Reloaded entries: " + str(len(loaded))
     remove_file("./demo_archive.zip")
     say ""
+end
+
+@cfg(any(not(feature = "io"), not(feature = "zip")))
+function demo_files()
+end
+
+function main()
+    say "=== archive Package Showcase ==="
+    say ""
+
+    # ───────────────────────────────────────────────────────────
+    # 1. Build An Entry Set
+    # ───────────────────────────────────────────────────────────
+    say "--- 1. Entry Set ---"
+    let entries = demo_entries()
+    say "Entries: " + str(len(entries))
+
+    demo_tar()
+    demo_zip()
+    demo_targz()
+    demo_files()
 
     say "Done!"
 end

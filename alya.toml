@@ -1,7 +1,7 @@
 [package]
 name = "archive"
 version = "0.1.0"
-alya-version = "0.0.19"
+alya-version = "0.0.20"
 entry = "src/lib.alya"
 description = "Multi-format archive toolkit for Alya: TAR/USTAR, ZIP stored/deflate and TAR.GZ packing with CRC integrity, powered by compress codecs"
 authors = ["Alya Language Contributors <https://github.com/alya-lang>"]
@@ -11,7 +11,24 @@ repository = "https://github.com/alya-lang/archive"
 keywords = ["alya", "alya-lang", "package", "archive", "tar", "zip", "gzip", "archiver", "compression"]
 
 [dependencies]
+# NOTE: compress stays mandatory (not optional): c/archive.c links the
+# compress native engine directly (alya_deflate_decompress, alya_gzip_*),
+# and [build] has no per-feature C gating, so slim builds still link it.
+# Features below gate Alya modules only.
 compress = { git = "https://github.com/alya-lang/compress", tag = "v0.1.0" }
+
+# Optional: feature-gated API slices. Members name another feature;
+# gate the using code with `@cfg(feature = "...")` (see `src/lib.alya`).
+# `default` is active unless the caller passes `--no-default-features`;
+# select features explicitly via
+# `alya build/run/test/bench/install --features <a,b>`.
+[features]
+default = ["tar", "zip", "targz", "io"]
+tar = []
+zip = []
+# targz packs tar images, so it implies tar.
+targz = ["tar"]
+io = []
 
 [build]
 c-sources = ["c/archive.c"]

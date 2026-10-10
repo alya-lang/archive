@@ -7,10 +7,83 @@
 
 import "./types.alya"
 import "./core/bytes.alya"
+# file.alya stays unconditional: the zip/targz backends need its codec
+# helpers (archive_crc32, inflate_exact, gunzip_exact). Only the
+# file-persistence facades further below are gated on `io`.
 import "./core/file.alya"
+@cfg(feature = "tar")
 import "./core/tar.alya"
+@cfg(feature = "zip")
 import "./core/zip.alya"
+@cfg(feature = "targz")
 import "./core/codecs.alya"
+
+# ───────────────────────────────────────────────────────────────
+# Feature-Sliced Pack / Unpack Backends
+# ───────────────────────────────────────────────────────────────
+# The unified pack/unpack dispatch below must link in every feature
+# view, so each backend goes through a thin wrapper with a throwing
+# fallback stub (template pattern) instead of shrinking away.
+
+@cfg(feature = "tar")
+function pack_tar(entries) -> array
+    return tar_build(entries)
+end
+
+@cfg(not(feature = "tar"))
+function pack_tar(entries) -> array
+    throw "tar feature is disabled (rebuild with default features or --features tar)"
+end
+
+@cfg(feature = "tar")
+function unpack_tar(data) -> array
+    return tar_parse(data)
+end
+
+@cfg(not(feature = "tar"))
+function unpack_tar(data) -> array
+    throw "tar feature is disabled (rebuild with default features or --features tar)"
+end
+
+@cfg(feature = "zip")
+function pack_zip(entries) -> array
+    return zip_build(entries, 0)
+end
+
+@cfg(not(feature = "zip"))
+function pack_zip(entries) -> array
+    throw "zip feature is disabled (rebuild with default features or --features zip)"
+end
+
+@cfg(feature = "zip")
+function unpack_zip(data) -> array
+    return zip_parse(data)
+end
+
+@cfg(not(feature = "zip"))
+function unpack_zip(data) -> array
+    throw "zip feature is disabled (rebuild with default features or --features zip)"
+end
+
+@cfg(feature = "targz")
+function pack_tgz(entries) -> array
+    return targz_pack(entries)
+end
+
+@cfg(not(feature = "targz"))
+function pack_tgz(entries) -> array
+    throw "targz feature is disabled (rebuild with default features or --features targz)"
+end
+
+@cfg(feature = "targz")
+function unpack_tgz(data) -> array
+    return targz_unpack(data)
+end
+
+@cfg(not(feature = "targz"))
+function unpack_tgz(data) -> array
+    throw "targz feature is disabled (rebuild with default features or --features targz)"
+end
 
 # ───────────────────────────────────────────────────────────────
 # Format Detection
@@ -65,9 +138,9 @@ end
 ## Archive image as a byte array, or throws for unsupported formats.
 pub function pack(entries, format: int = 2) -> array
     when format
-        is ArchiveFormat.Tar then return tar_build(entries)
-        is ArchiveFormat.Zip then return zip_build(entries, 0)
-        is ArchiveFormat.TarGz then return targz_pack(entries)
+        is ArchiveFormat.Tar then return pack_tar(entries)
+        is ArchiveFormat.Zip then return pack_zip(entries)
+        is ArchiveFormat.TarGz then return pack_tgz(entries)
         is ArchiveFormat.SevenZ then throw "archive: 7z packing is unsupported in v0.1.0 (roadmap)"
         is ArchiveFormat.Rar then throw "archive: rar packing is unsupported (proprietary format)"
         else throw "archive: unknown archive format: " + str(format)
@@ -88,9 +161,9 @@ pub function unpack(data, format: int = -1) -> array
         fmt = detect_format(data)
     end
     when fmt
-        is ArchiveFormat.Tar then return tar_parse(data)
-        is ArchiveFormat.Zip then return zip_parse(data)
-        is ArchiveFormat.TarGz then return targz_unpack(data)
+        is ArchiveFormat.Tar then return unpack_tar(data)
+        is ArchiveFormat.Zip then return unpack_zip(data)
+        is ArchiveFormat.TarGz then return unpack_tgz(data)
         is ArchiveFormat.SevenZ then throw "archive: 7z unpacking is unsupported in v0.1.0 (roadmap)"
         is ArchiveFormat.Rar then throw "archive: rar unpacking is unsupported (proprietary format)"
         else throw "archive: unknown archive format: " + str(fmt)
@@ -172,6 +245,9 @@ end
 ##
 ## ### Returns
 ## `1` on success, or throws an error.
+##
+## Requires the `io` feature (default-on).
+@cfg(feature = "io")
 pub function save_archive(path: string, data) -> int
     return save_bytes(path, data)
 end
@@ -183,6 +259,9 @@ end
 ##
 ## ### Returns
 ## Archive image byte array, or throws an error.
+##
+## Requires the `io` feature (default-on).
+@cfg(feature = "io")
 pub function load_archive(path: string) -> array
     return load_bytes(path)
 end
@@ -196,6 +275,9 @@ end
 ##
 ## ### Returns
 ## `1` on success, or throws an error.
+##
+## Requires the `io` feature (default-on).
+@cfg(feature = "io")
 pub function pack_file(path: string, entries, format: int = 2) -> int
     return save_archive(path, pack(entries, format))
 end
@@ -208,6 +290,9 @@ end
 ##
 ## ### Returns
 ## Array of `ArchiveEntry` structs, or throws on corrupt input.
+##
+## Requires the `io` feature (default-on).
+@cfg(feature = "io")
 pub function unpack_file(path: string, format: int = -1) -> array
     return unpack(load_archive(path), format)
 end

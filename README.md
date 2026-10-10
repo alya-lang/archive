@@ -72,6 +72,27 @@ alya add archive --git https://github.com/alya-lang/archive --branch main
 alya install
 ```
 
+### Package Features
+
+| Feature | Default | Description |
+|:---|:---:|:---|
+| `tar` | ✅ | TAR/USTAR packing and parsing (`tar_build`, `tar_parse`, `tar_names`). |
+| `zip` | ✅ | ZIP stored/deflate packing and parsing (`zip_build`, `zip_parse`, `zip_names`). |
+| `targz` | ✅ | TAR.GZ packing and unpacking, implies `tar` (`targz_pack`, `targz_unpack`). |
+| `io` | ✅ | Binary-safe file persistence (`save_archive`, `load_archive`, `pack_file`, `unpack_file`). |
+
+Core dispatch (`pack`, `unpack`, `list_names`), format detection, entry models and byte codecs always work. Packing into a disabled format throws a descriptive error naming the missing feature.
+
+```bash
+# Full build (default)
+alya install
+alya test
+
+# Slim build (core only; format helpers become unavailable)
+alya install --no-default-features
+alya test --no-default-features
+```
+
 ### Dependencies
 
 `archive` builds on the [`compress`](https://github.com/alya-lang/compress) package (pinned `v0.1.0`) for DEFLATE/gzip codecs, plus a small bundled C engine (`c/archive.c`) for binary-safe file persistence, CRC-32, and exact-size decompression.

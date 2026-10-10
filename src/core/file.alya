@@ -8,6 +8,15 @@
 
 import "../ffi.alya"
 import "./bytes.alya"
+# Unconditional compress import: c/archive.c links the compress native
+# engine (inflate/gunzip glue), and the driver links a dependency's
+# native objects only in views that import its Alya code — so every
+# feature view must import it, or slim builds fail at link time with
+# undefined `alya_deflate_decompress`. The codecs below use it directly
+# whenever the zip/targz slices are enabled.
+# alya-lint: disable unused-import
+import "compress" as compress_pkg
+# alya-lint: enable unused-import
 
 ## Saves a byte array to disk without any text encoding or NUL truncation.
 ##
